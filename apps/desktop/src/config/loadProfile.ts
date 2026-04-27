@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import type { DrawingProfile } from "../types.js";
 import { DEFAULT_PALETTE, DEFAULT_PROFILE } from "./defaultProfile.js";
+import { OFFICIAL_PALETTE } from "./officialPalette.js";
 
 const VALID_DRAWING_TOOLS = new Set<DrawingProfile["startTool"]>([
   "pen",
@@ -49,7 +50,9 @@ export async function loadProfile(profilePath?: string): Promise<DrawingProfile>
   const palette =
     Array.isArray(parsed.palette) && parsed.palette.length > 0
       ? parsed.palette.filter((color): color is string => typeof color === "string")
-      : DEFAULT_PALETTE.slice();
+      : parsed.colorMode === "official"
+        ? OFFICIAL_PALETTE.slice()
+        : DEFAULT_PALETTE.slice();
 
   return {
     profileName: toString(parsed.profileName, DEFAULT_PROFILE.profileName),
@@ -65,7 +68,11 @@ export async function loadProfile(profilePath?: string): Promise<DrawingProfile>
     ackTimeoutMs: toNumber(parsed.ackTimeoutMs, DEFAULT_PROFILE.ackTimeoutMs),
     commandRetryCount: toNumber(parsed.commandRetryCount, DEFAULT_PROFILE.commandRetryCount),
     drawButton: parsed.drawButton ?? DEFAULT_PROFILE.drawButton,
-    colorMode: parsed.colorMode === "palette" ? "palette" : "mono",
+    colorMode:
+      parsed.colorMode === "palette" || parsed.colorMode === "official"
+        ? parsed.colorMode
+        : "mono",
+    colorCount: toNonNegativeNumber(parsed.colorCount, DEFAULT_PROFILE.colorCount),
     monoThreshold: toNumber(parsed.monoThreshold, DEFAULT_PROFILE.monoThreshold),
     palette,
     brushSize: toBrushSize(parsed.brushSize, DEFAULT_PROFILE.brushSize),

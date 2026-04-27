@@ -17,6 +17,12 @@ const state = {
     brushSize: 1,
     colorMode: "mono",
     colorCount: 32,
+    usedColorIndexes: [],
+    officialPalette: {
+      rows: 0,
+      cols: 0,
+      grid: [],
+    },
     profile: {
       baudRate: 115200,
       ackTimeoutMs: 5000,
@@ -104,6 +110,9 @@ const els = {
   studioExecutionStatus: document.getElementById("studio-execution-status"),
   previewImage: document.getElementById("preview-image"),
   previewEmpty: document.getElementById("preview-empty"),
+  officialPalettePanel: document.getElementById("official-palette-panel"),
+  officialPaletteSummary: document.getElementById("official-palette-summary"),
+  officialPaletteGrid: document.getElementById("official-palette-grid"),
   commandsOutput: document.getElementById("commands-output"),
   copyButton: document.getElementById("copy-button"),
   downloadButton: document.getElementById("download-button"),
@@ -158,6 +167,12 @@ const els = {
 
 let studioExecutionPollTimer = null;
 
+const COLOR_COUNT_OPTIONS_BY_MODE = {
+  mono: [2],
+  palette: [8, 9, 16, 18, 24, 32, 64, 128],
+  official: [8, 16, 32, 64, 84],
+};
+
 els.pageTabs.forEach((button) => {
   button.addEventListener("click", () => {
     switchPage(button.dataset.pageTarget ?? "studio");
@@ -175,7 +190,10 @@ els.brushSizeSelect.addEventListener("change", () => {
 });
 
 els.colorModeSelect.addEventListener("change", () => {
-  state.studio.colorMode = els.colorModeSelect.value === "palette" ? "palette" : "mono";
+  const nextMode = els.colorModeSelect.value;
+  state.studio.colorMode =
+    nextMode === "palette" || nextMode === "official" ? nextMode : "mono";
+  syncStudioColorCountOptions();
   syncStudioUi();
 });
 
@@ -315,13 +333,20 @@ async function generateStudioCommands({ logPrefix }) {
     }
 
     state.commands = payload.commands;
+    state.studio.usedColorIndexes = Array.isArray(payload.stats.usedColorIndexes)
+      ? payload.stats.usedColorIndexes
+      : [];
     state.studio.profile = {
       baudRate: payload.profile.baudRate ?? 115200,
       ackTimeoutMs: payload.profile.ackTimeoutMs ?? 5000,
       commandRetryCount: payload.profile.commandRetryCount ?? 1,
     };
     state.studio.brushSize = payload.profile.brushSize ?? state.studio.brushSize;
-    state.studio.colorMode = payload.profile.colorMode === "palette" ? "palette" : "mono";
+    state.studio.colorMode =
+      payload.profile.colorMode === "palette" || payload.profile.colorMode === "official"
+        ? payload.profile.colorMode
+        : "mono";
+    state.studio.colorCount = payload.profile.colorCount ?? state.studio.colorCount;
 
     els.commandsOutput.value = payload.commands.join("\n");
     els.previewImage.src = payload.previewDataUrl;
@@ -330,7 +355,9 @@ async function generateStudioCommands({ logPrefix }) {
     els.statColors.textContent =
       payload.profile.colorMode === "mono"
         ? "黑 / 白"
-        : `${payload.stats.usedColorIndexes.length} / ${state.studio.colorCount} 色`;
+        : payload.profile.colorMode === "official"
+          ? `${payload.stats.usedColorIndexes.length} / ${state.studio.colorCount} 官方色`
+          : `${payload.stats.usedColorIndexes.length} / ${state.studio.colorCount} 色`;
     els.statPixels.textContent = String(payload.stats.totalPixels);
     els.statCommands.textContent = String(payload.stats.commandCount);
     els.statRuntime.textContent = payload.stats.estimatedRuntimeLabel;
@@ -338,6 +365,7 @@ async function generateStudioCommands({ logPrefix }) {
       els.studioLogOutput,
       `生成完成：${payload.stats.commandCount} 条命令，预计耗时 ${payload.stats.estimatedRuntimeLabel}`,
     );
+    renderOfficialPalettePreview();
     return true;
   } catch (error) {
     appendLog(els.studioLogOutput, `生成失败：${getErrorMessage(error)}`);
@@ -879,6 +907,77 @@ function renderStudioExecutionStatus() {
   }
 }
 
+function renderOfficialPalettePreview() {
+  const isOfficialMode = state.studio.colorMode === "official";
+  const palette = state.studio.officialPalette;
+
+  els.officialPalettePanel.classList.toggle(
+    "hidden",
+    !isOfficialMode || !Array.isArray(palette.grid) || palette.grid.length === 0,
+  );
+
+  if (!isOfficialMode || !Array.isArray(palette.grid) || palette.grid.length === 0) {
+    els.officialPaletteGrid.innerHTML = "";
+    return;
+  }
+
+  const usedIndexes = new Set(
+    Array.isArray(state.studio.usedColorIndexes) ? state.studio.usedColorIndexes : [],
+  );
+  const usedCount = usedIndexes.size;
+  els.officialPaletteSummary.textContent =
+    usedCount > 0
+      ? `这里显示程序当前使用的 7x12 官方色盘。当前这张图实际量化到了 ${usedCount} 个官方色，已高亮对应格子。`
+      : "这里显示程序当前使用的 7x12 官方色盘，并会高亮这张图实际量化到的颜色格。";
+
+  els.officialPaletteGrid.innerHTML = "";
+
+  palette.grid.forEach((rowColors, rowIndex) => {
+    rowColors.forEach((colorHex, colIndex) => {
+      const cell = document.createElement("div");
+      const flatIndex = rowIndex * palette.cols + colIndex;
+      cell.className = `official-palette-cell${usedIndexes.has(flatIndex) ? " used" : ""}`;
+
+      const swatch = document.createElement("div");
+      swatch.className = "official-palette-swatch";
+      swatch.style.background = colorHex;
+
+      const meta = document.createElement("div");
+      meta.className = "official-palette-meta";
+
+      const coord = document.createElement("span");
+      coord.className = "official-palette-coord";
+      coord.textContent = `R${rowIndex} · C${colIndex}`;
+
+      const hex = document.createElement("span");
+      hex.className = "official-palette-hex";
+      hex.textContent = colorHex;
+
+      meta.append(coord, hex);
+      cell.append(swatch, meta);
+      els.officialPaletteGrid.appendChild(cell);
+    });
+  });
+}
+
+function syncStudioColorCountOptions() {
+  const nextOptions = COLOR_COUNT_OPTIONS_BY_MODE[state.studio.colorMode] ?? [32];
+  const currentValue = Number(state.studio.colorCount);
+  const fallbackValue = nextOptions.includes(32) ? 32 : nextOptions[0];
+  const normalizedValue = nextOptions.includes(currentValue) ? currentValue : fallbackValue;
+
+  state.studio.colorCount = normalizedValue;
+  els.colorCountSelect.innerHTML = "";
+
+  nextOptions.forEach((value) => {
+    const option = document.createElement("option");
+    option.value = String(value);
+    option.textContent = state.studio.colorMode === "mono" ? "黑 / 白" : `${value} 色`;
+    option.selected = value === normalizedValue;
+    els.colorCountSelect.appendChild(option);
+  });
+}
+
 function syncStudioUi() {
   const hasPort = Boolean(state.selectedPortPath);
   const controllerReady = isControllerReadyForStudio();
@@ -891,11 +990,13 @@ function syncStudioUi() {
   els.sizeSelect.value = String(state.studio.canvasSize);
   els.brushSizeSelect.value = String(state.studio.brushSize);
   els.colorModeSelect.value = state.studio.colorMode;
-  els.colorCountSelect.value = String(state.studio.colorCount);
+  syncStudioColorCountOptions();
   els.studioModeHint.textContent = monoBrushReady
     ? state.studio.colorMode === "mono"
       ? "深色像素会绘制，浅色像素会保留为空白背景。当前会把图片完整铺到 128x128 画布，再按 1 号笔和画布中心起步生成。"
-      : `当前会先把图片自动量化成 ${state.studio.colorCount} 色，再按 128x128 画布和 1 号笔生成绘制脚本。`
+      : state.studio.colorMode === "official"
+        ? `当前会先把图片压到 ${state.studio.colorCount} 个官方色以内，再映射到游戏内置的 7x12 官方色盘。开始前请先把 9 个槽位手动设为白色。`
+        : `当前会先把图片自动量化成 ${state.studio.colorCount} 色，再按 128x128 画布和 1 号笔生成绘制脚本。`
     : `当前已选 ${state.studio.brushSize} 号画笔，但脚本生成这一步先只支持 1 号笔。建议先切回 1 号笔，把中心起步这条链路跑通。`;
   els.studioPortSelect.disabled = state.studio.busy || executionActive;
   els.refreshPortsButton.disabled = state.studio.busy || executionActive;
@@ -903,8 +1004,9 @@ function syncStudioUi() {
   els.brushSizeSelect.disabled = state.studio.busy || executionActive;
   els.colorModeSelect.disabled = state.studio.busy || executionActive;
   els.colorCountSelect.disabled =
-    state.studio.busy || executionActive || state.studio.colorMode !== "palette";
-  els.thresholdLabel.textContent = state.studio.colorMode === "mono" ? "单色阈值" : "多色模式下不使用阈值";
+    state.studio.busy || executionActive || state.studio.colorMode === "mono";
+  els.thresholdLabel.textContent =
+    state.studio.colorMode === "mono" ? "单色阈值" : "当前模式下不使用阈值";
   els.thresholdRange.disabled = state.studio.busy || executionActive;
   els.quickStartButton.textContent = "一键开始绘制";
   els.executeButton.textContent = "执行现有脚本";
@@ -927,8 +1029,9 @@ function syncStudioUi() {
   els.resumeExecutionButton.disabled = !executionPaused;
   els.stopExecutionButton.disabled = !(executionRunning || executionPaused);
   renderStudioExecutionStatus();
+  renderOfficialPalettePreview();
 
-  if (state.studio.colorMode === "palette") {
+  if (state.studio.colorMode !== "mono") {
     els.thresholdRange.disabled = true;
     els.thresholdValue.textContent = "-";
   } else {
@@ -971,7 +1074,9 @@ function syncStudioUi() {
   els.executionHint.textContent =
     state.studio.colorMode === "mono"
       ? `当前会把 128x128 的黑白脚本通过串口发送到 ${state.selectedPortPath}，由 ESP32 从画布中心起步，继续翻译成方向键移动与 A 绘制。`
-      : `当前会把 128x128 的多色脚本通过串口发送到 ${state.selectedPortPath}，由 ESP32 从画布中心起步，继续翻译成颜色切换、方向键移动与 A 绘制。`;
+      : state.studio.colorMode === "official"
+        ? `当前会把 128x128 的官方色脚本通过串口发送到 ${state.selectedPortPath}。请先手动把 9 个槽位设为白色，ESP32 会按槽位当前颜色状态去配置内置 7x12 色盘。`
+        : `当前会把 128x128 的多色脚本通过串口发送到 ${state.selectedPortPath}，由 ESP32 从画布中心起步，继续翻译成颜色切换、方向键移动与 A 绘制。`;
   renderStudioConnectionStatus();
 }
 
@@ -1226,6 +1331,26 @@ async function loadFirmwareInfo() {
   }
 }
 
+async function loadOfficialPalette() {
+  try {
+    const response = await fetch("/api/official-palette");
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.error ?? "官方色盘加载失败");
+    }
+
+    state.studio.officialPalette = {
+      rows: typeof payload.rows === "number" ? payload.rows : 0,
+      cols: typeof payload.cols === "number" ? payload.cols : 0,
+      grid: Array.isArray(payload.grid) ? payload.grid : [],
+    };
+    renderOfficialPalettePreview();
+  } catch (error) {
+    appendLog(els.studioLogOutput, `加载官方色盘失败：${getErrorMessage(error)}`);
+  }
+}
+
 function renderFirmwareEnvironments() {
   els.firmwareEnvSelect.innerHTML = "";
 
@@ -1373,7 +1498,8 @@ async function init() {
   switchPage("studio");
   state.studio.canvasSize = Number(els.sizeSelect.value || state.studio.canvasSize);
   state.studio.brushSize = Number(els.brushSizeSelect.value || state.studio.brushSize);
-  await Promise.all([refreshPorts(), loadFirmwareInfo(), pollStudioExecutionStatus()]);
+  syncStudioColorCountOptions();
+  await Promise.all([refreshPorts(), loadFirmwareInfo(), loadOfficialPalette(), pollStudioExecutionStatus()]);
   renderPortSelects();
   syncStudioUi();
   syncFirmwareUi();

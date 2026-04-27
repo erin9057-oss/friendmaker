@@ -24,6 +24,38 @@ int clampPaletteSlotIndex(int index) {
   return index;
 }
 
+uint8_t clampBasicColorRow(int row) {
+  if (row < 0) {
+    return 0;
+  }
+
+  if (row >= BASIC_COLOR_GRID_ROWS) {
+    return BASIC_COLOR_GRID_ROWS - 1;
+  }
+
+  return static_cast<uint8_t>(row);
+}
+
+uint8_t clampBasicColorCol(int col) {
+  if (col < 0) {
+    return 0;
+  }
+
+  if (col >= BASIC_COLOR_GRID_COLS) {
+    return BASIC_COLOR_GRID_COLS - 1;
+  }
+
+  return static_cast<uint8_t>(col);
+}
+
+uint8_t wrappedUpSteps(uint8_t currentRow, uint8_t targetRow) {
+  return static_cast<uint8_t>((currentRow + BASIC_COLOR_GRID_ROWS - targetRow) % BASIC_COLOR_GRID_ROWS);
+}
+
+uint8_t wrappedLeftSteps(uint8_t currentCol, uint8_t targetCol) {
+  return static_cast<uint8_t>((currentCol + BASIC_COLOR_GRID_COLS - targetCol) % BASIC_COLOR_GRID_COLS);
+}
+
 uint8_t scaleChannelToSteps(float value, uint8_t steps) {
   if (steps == 0) {
     return 0;
@@ -74,7 +106,10 @@ void pressPaletteMenuButton(ControllerTransport &transport, ControllerButton but
 
 SwitchController::SwitchController(ControllerTransport &transport) : transport_(transport) {}
 
-void SwitchController::begin() { transport_.begin(); }
+void SwitchController::begin() {
+  transport_.begin();
+  resetBasicPaletteTracking();
+}
 
 void SwitchController::waitUntilReady() const {
   while (paused_) {
@@ -129,6 +164,15 @@ void SwitchController::tapButton(ControllerButton button, uint16_t count) {
 void SwitchController::pressButtons(uint32_t buttonsMask) {
   waitUntilReady();
   transport_.pressButtons(buttonsMask, BUTTON_PRESS_DURATION_MS, INPUT_DELAY_MS);
+}
+
+void SwitchController::resetBasicPaletteTracking() {
+  for (uint8_t slot = 0; slot < COLOR_PALETTE_SLOT_COUNT; slot += 1) {
+    basicPaletteSlotRows_[slot] = BASIC_COLOR_ANCHOR_ROW;
+    basicPaletteSlotCols_[slot] = BASIC_COLOR_ANCHOR_COL;
+  }
+
+  basicPaletteTrackingReady_ = true;
 }
 
 void SwitchController::selectColor(int index) {
@@ -212,6 +256,55 @@ void SwitchController::configurePaletteSlot(int index, uint8_t red, uint8_t gree
   transport_.pressButton(ControllerButton::B, BUTTON_PRESS_DURATION_MS, INPUT_DELAY_MS);
   transport_.pressButton(ControllerButton::A, BUTTON_PRESS_DURATION_MS, INPUT_DELAY_MS);
   transport_.pressButton(ControllerButton::B, BUTTON_PRESS_DURATION_MS, INPUT_DELAY_MS);
+  delay(INPUT_DELAY_MS);
+}
+
+void SwitchController::configureBasicPaletteSlot(int index, uint8_t row, uint8_t col) {
+  waitUntilReady();
+
+  const int slotIndex = clampPaletteSlotIndex(index);
+  const uint8_t targetRow = clampBasicColorRow(row);
+  const uint8_t targetCol = clampBasicColorCol(col);
+  const uint8_t currentRow = basicPaletteTrackingReady_ ? basicPaletteSlotRows_[slotIndex] : BASIC_COLOR_ANCHOR_ROW;
+  const uint8_t currentCol = basicPaletteTrackingReady_ ? basicPaletteSlotCols_[slotIndex] : BASIC_COLOR_ANCHOR_COL;
+  const uint8_t upSteps = wrappedUpSteps(currentRow, targetRow);
+  const uint8_t leftSteps = wrappedLeftSteps(currentCol, targetCol);
+
+  transport_.pressButton(ControllerButton::Y, BUTTON_PRESS_DURATION_MS, INPUT_DELAY_MS);
+  delay(COLOR_PALETTE_MENU_OPEN_SETTLE_MS);
+
+  for (int step = 0; step < COLOR_PALETTE_RESET_TO_BOTTOM_STEPS; step += 1) {
+    pressPaletteMenuButton(transport_, ControllerButton::DpadDown);
+  }
+
+  for (int step = 0; step < (COLOR_PALETTE_SLOT_COUNT - 1 - slotIndex); step += 1) {
+    pressPaletteMenuButton(transport_, ControllerButton::DpadUp);
+  }
+
+  pressPaletteMenuButton(transport_, ControllerButton::Y);
+  delay(COLOR_PALETTE_EDITOR_OPEN_SETTLE_MS);
+
+  // The basic color grid wraps around, so we can't "hold until the edge".
+  // Instead we keep track of each slot's current row/column and move only the
+  // exact number of UP/LEFT taps required to reach the next target.
+  pressPaletteMenuButton(transport_, ControllerButton::L);
+  delay(BASIC_COLOR_TAB_SETTLE_MS);
+
+  for (uint8_t step = 0; step < upSteps; step += 1) {
+    pressPaletteMenuButton(transport_, ControllerButton::DpadUp);
+  }
+
+  for (uint8_t step = 0; step < leftSteps; step += 1) {
+    pressPaletteMenuButton(transport_, ControllerButton::DpadLeft);
+  }
+
+  // In the basic-color picker, pressing A on the target swatch immediately
+  // applies the color and returns to the canvas.
+  pressPaletteMenuButton(transport_, ControllerButton::A);
+
+  basicPaletteSlotRows_[slotIndex] = targetRow;
+  basicPaletteSlotCols_[slotIndex] = targetCol;
+  basicPaletteTrackingReady_ = true;
   delay(INPUT_DELAY_MS);
 }
 

@@ -1,6 +1,0 @@
-source "/Users/xiyu/.platformio/packages/framework-espidf/components/app_update/Kconfig.projbuild"
-source "/Users/xiyu/.platformio/packages/framework-espidf/components/bootloader/Kconfig.projbuild"
-source "/Users/xiyu/.platformio/packages/framework-espidf/components/esp_rom/Kconfig.projbuild"
-source "/Users/xiyu/.platformio/packages/framework-espidf/components/esptool_py/Kconfig.projbuild"
-source "/Users/xiyu/.platformio/packages/framework-espidf/components/partition_table/Kconfig.projbuild"
-source "/Users/xiyu/.platformio/packages/framework-arduinoespressif32/Kconfig.projbuild"

@@ -17,7 +17,9 @@ class SwitchController {
   void tapButton(ControllerButton button, uint16_t count);
   void pressButtons(uint32_t buttonsMask);
   void selectColor(int index);
+  void resetBasicPaletteTracking();
   void configurePaletteSlot(int index, uint8_t red, uint8_t green, uint8_t blue);
+  void configureBasicPaletteSlot(int index, uint8_t row, uint8_t col);
   bool resetBluetooth();
   void pause();
   void resume();
@@ -28,6 +30,9 @@ class SwitchController {
  private:
   ControllerTransport &transport_;
   bool paused_ = false;
+  uint8_t basicPaletteSlotRows_[9] = {};
+  uint8_t basicPaletteSlotCols_[9] = {};
+  bool basicPaletteTrackingReady_ = false;
 
   void waitUntilReady() const;
 };

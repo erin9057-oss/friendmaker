@@ -218,6 +218,7 @@ npm run dev -- --commands-file ./examples/smoke-test-commands.txt --port /dev/cu
 - `docs/setup-mac.md`
 - `docs/arrival-checklist.md`
 - `docs/wiring.md`
+- `docs/development-manual.md`
 
 ## 到货前还能做什么
 
@@ -237,6 +238,10 @@ npm run dev -- --commands-file ./examples/smoke-test-commands.txt --send --simul
 ```
 
 ## 下一步建议
+
+当前开发判断与阶段性结论，优先看：
+
+- `docs/development-manual.md`
 
 1. 先用 `smoke-test-commands.txt` 跑 `串口 ACK + 指令解析 + 单步动作时序`
 2. 再跑 `demo.svg` 的图像生成和串口发送

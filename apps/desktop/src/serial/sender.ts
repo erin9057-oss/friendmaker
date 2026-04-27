@@ -119,6 +119,27 @@ function getAckTimeoutForCommand(command: string, baseTimeoutMs: number): number
     return Math.max(baseTimeoutMs, 1_500 + steps * 150);
   }
 
+  if (trimmed === "BC RESET") {
+    return Math.max(baseTimeoutMs, 4_000);
+  }
+
+  if (trimmed.startsWith("C ")) {
+    // Palette slot switching walks through the in-game color menu before
+    // returning to the canvas, so it needs substantially more time than a
+    // simple button press.
+    return Math.max(baseTimeoutMs, 7_000);
+  }
+
+  if (trimmed.startsWith("BC ")) {
+    // Official/basic color configuration traverses multiple menu layers and a
+    // wrapped 7x12 grid before returning to the canvas.
+    return Math.max(baseTimeoutMs, 15_000);
+  }
+
+  if (trimmed.startsWith("PC ")) {
+    return Math.max(baseTimeoutMs, 20_000);
+  }
+
   return baseTimeoutMs;
 }
 

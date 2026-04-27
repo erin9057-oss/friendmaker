@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { generateDrawPlan } from "../app/generateDrawPlan.js";
 import { applyCliOptions, type CliOptions } from "../cli/args.js";
 import { loadProfile } from "../config/loadProfile.js";
+import { OFFICIAL_COLOR_GRID } from "../config/officialPalette.js";
 import { listPortInfos, preferSerialPath } from "../serial/listPorts.js";
 import { SerialAckSender } from "../serial/sender.js";
 import { SimulatedAckSender } from "../simulator/sender.js";
@@ -260,7 +261,7 @@ function makeCliOverrides(input: {
   colors?: number;
   threshold?: number;
   resizeMode?: "contain" | "cover";
-  mode?: "mono" | "palette";
+  mode?: "mono" | "palette" | "official";
   palette?: string[];
 }): CliOptions {
   return {
@@ -291,7 +292,7 @@ async function handleGenerate(request: IncomingMessage, response: ServerResponse
     width?: number;
     height?: number;
     threshold?: number;
-    mode?: "mono" | "palette";
+    mode?: "mono" | "palette" | "official";
     colors?: number;
     resizeMode?: "contain" | "cover";
     palette?: string[];
@@ -336,6 +337,7 @@ async function handleGenerate(request: IncomingMessage, response: ServerResponse
       canvasHeight: profile.canvasHeight,
       brushSize: profile.brushSize,
       colorMode: profile.colorMode,
+      colorCount: profile.colorCount,
       palette: plan.paletteHexes,
       baudRate: profile.baudRate,
       ackTimeoutMs: profile.ackTimeoutMs,
@@ -582,6 +584,14 @@ async function handlePorts(response: ServerResponse): Promise<void> {
   });
 }
 
+function handleOfficialPalette(response: ServerResponse): void {
+  json(response, 200, {
+    rows: OFFICIAL_COLOR_GRID.length,
+    cols: OFFICIAL_COLOR_GRID[0]?.length ?? 0,
+    grid: OFFICIAL_COLOR_GRID,
+  });
+}
+
 async function handleFirmwareInfo(response: ServerResponse): Promise<void> {
   const platformIoPath = resolvePlatformIoPath();
 
@@ -803,6 +813,11 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "GET" && url.pathname === "/api/ports") {
       await handlePorts(response);
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/official-palette") {
+      handleOfficialPalette(response);
       return;
     }
 

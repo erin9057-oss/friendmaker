@@ -5,3 +5,4 @@ dist
 coverage
 tmp
 *.tsbuildinfo
+firmware/esp32/.pio/

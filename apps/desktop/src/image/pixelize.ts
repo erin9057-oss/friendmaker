@@ -15,6 +15,7 @@ export async function pixelizeImage(
 
   const pixelMap = quantizePixels(rawImage, {
     colorMode: profile.colorMode,
+    colorCount: profile.colorCount,
     monoThreshold: profile.monoThreshold,
     palette: profile.palette,
   });

@@ -1,5 +1,5 @@
 export type ResizeMode = "contain" | "cover";
-export type ColorMode = "mono" | "palette";
+export type ColorMode = "mono" | "palette" | "official";
 export type ControllerButton = "A" | "B" | "X" | "Y";
 export type StartCursor = "center" | "top-left";
 export type DrawingTool = "pen" | "eraser" | "fill" | "stamp" | "text" | "shape";
@@ -42,6 +42,7 @@ export interface DrawingProfile {
   commandRetryCount: number;
   drawButton: ControllerButton;
   colorMode: ColorMode;
+  colorCount: number;
   monoThreshold: number;
   palette: string[];
   brushSize: BrushSize;

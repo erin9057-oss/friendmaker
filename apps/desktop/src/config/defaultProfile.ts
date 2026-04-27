@@ -1,5 +1,6 @@
 import type { DrawingProfile } from "../types.js";
 import { rgbToHex } from "../utils/colors.js";
+import { OFFICIAL_PALETTE } from "./officialPalette.js";
 
 function hslToRgb(hue: number, saturation: number, lightness: number) {
   const h = ((hue % 360) + 360) % 360 / 360;
@@ -83,6 +84,7 @@ function buildReferencePalette(): string[] {
 }
 
 export const DEFAULT_PALETTE = buildReferencePalette();
+export const DEFAULT_OFFICIAL_PALETTE = OFFICIAL_PALETTE;
 
 export const DEFAULT_PROFILE: DrawingProfile = {
   profileName: "switch-mono-128",
@@ -99,6 +101,7 @@ export const DEFAULT_PROFILE: DrawingProfile = {
   commandRetryCount: 1,
   drawButton: "A",
   colorMode: "mono",
+  colorCount: 32,
   monoThreshold: 128,
   palette: DEFAULT_PALETTE.slice(0, 2),
   brushSize: 1,

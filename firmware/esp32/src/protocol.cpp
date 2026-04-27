@@ -66,6 +66,27 @@ bool parsePaletteConfigCommand(
   return parseHexColorToken(line.substring(secondSpace + 1), red, green, blue);
 }
 
+bool parseBasicColorConfigCommand(const String &line, int &slotIndex, int &row, int &col) {
+  if (!line.startsWith("BC ")) {
+    return false;
+  }
+
+  const int firstSpace = line.indexOf(' ');
+  const int secondSpace = line.indexOf(' ', firstSpace + 1);
+  const int thirdSpace = line.indexOf(' ', secondSpace + 1);
+
+  if (secondSpace < 0 || thirdSpace < 0) {
+    return false;
+  }
+
+  slotIndex = line.substring(firstSpace + 1, secondSpace).toInt();
+  row = line.substring(secondSpace + 1, thirdSpace).toInt();
+  col = line.substring(thirdSpace + 1).toInt();
+  return true;
+}
+
+bool isBasicColorResetCommand(const String &line) { return line == "BC RESET"; }
+
 bool parseHoldButtonCommand(const String &line, ControllerButton &button, uint16_t &holdMs) {
   if (!line.startsWith("HOLD ")) {
     return false;
@@ -393,6 +414,26 @@ bool executeCommand(const String &line, SwitchController &controller, String &er
         paletteRed,
         paletteGreen,
         paletteBlue);
+    return true;
+  }
+
+  int basicColorRow = 0;
+  int basicColorCol = 0;
+
+  if (isBasicColorResetCommand(line)) {
+    controller.resetBasicPaletteTracking();
+    Serial.println("INFO action=basic-color-reset anchor=white");
+    return true;
+  }
+
+  if (parseBasicColorConfigCommand(line, paletteSlotIndex, basicColorRow, basicColorCol)) {
+    controller.configureBasicPaletteSlot(
+        paletteSlotIndex, static_cast<uint8_t>(basicColorRow), static_cast<uint8_t>(basicColorCol));
+    Serial.printf(
+        "INFO action=basic-color-config slot=%d row=%d col=%d\n",
+        paletteSlotIndex,
+        basicColorRow,
+        basicColorCol);
     return true;
   }
 

@@ -1,5 +1,8 @@
 import type { DrawingProfile, Pixel, PixelMap } from "../types.js";
+import { officialPaletteCellFromIndex } from "../config/officialPalette.js";
 import {
+  basicPaletteConfigCommand,
+  basicPaletteResetCommand,
   colorCommand,
   drawCommand,
   endCommand,
@@ -146,7 +149,7 @@ export function generateScanlineCommands(
         current = { x: pixel.x, y: pixel.y };
       }
     }
-  } else {
+  } else if (profile.colorMode === "palette") {
     const usedColors = getUsedPaletteColors(pixelMap);
 
     for (let batchStart = 0; batchStart < usedColors.length; batchStart += PALETTE_SLOT_COUNT) {
@@ -155,6 +158,41 @@ export function generateScanlineCommands(
 
       batch.forEach((color, slotIndex) => {
         commands.push(paletteConfigCommand(slotIndex, color.colorHex));
+      });
+
+      for (const [slotIndex, color] of batch.entries()) {
+        if (selectedSlot !== slotIndex) {
+          commands.push(colorCommand(slotIndex));
+          selectedSlot = slotIndex;
+        }
+
+        const orderedPixels = shouldStartFromCanvasCenter(profile)
+          ? rotatePixelsToNearestStart(getPixelsByColor(pixelMap, color.colorIndex), current)
+          : getPixelsByColor(pixelMap, color.colorIndex);
+
+        for (const pixel of orderedPixels) {
+          commands.push(...moveTo(current, pixel));
+          commands.push(drawCommand(profile.drawButton));
+          current = { x: pixel.x, y: pixel.y };
+        }
+      }
+    }
+  } else {
+    const usedColors = getUsedPaletteColors(pixelMap);
+    let didResetOfficialPaletteState = false;
+
+    for (let batchStart = 0; batchStart < usedColors.length; batchStart += PALETTE_SLOT_COUNT) {
+      const batch = usedColors.slice(batchStart, batchStart + PALETTE_SLOT_COUNT);
+      let selectedSlot: number | null = null;
+
+      if (!didResetOfficialPaletteState) {
+        commands.push(basicPaletteResetCommand());
+        didResetOfficialPaletteState = true;
+      }
+
+      batch.forEach((color, slotIndex) => {
+        const cell = officialPaletteCellFromIndex(color.colorIndex);
+        commands.push(basicPaletteConfigCommand(slotIndex, cell.row, cell.col));
       });
 
       for (const [slotIndex, color] of batch.entries()) {
@@ -198,6 +236,10 @@ export function estimateRuntimeMs(commands: DrawCommand[], profile: DrawingProfi
         return total + profile.colorChangeDuration;
       case "paletteConfig":
         return total + profile.colorChangeDuration * 6;
+      case "basicPaletteConfig":
+        return total + profile.colorChangeDuration * 4;
+      case "basicPaletteReset":
+        return total + profile.inputDelay;
       case "wait":
         return total + command.ms;
       case "pause":

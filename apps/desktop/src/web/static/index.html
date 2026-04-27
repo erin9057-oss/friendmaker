@@ -34,7 +34,7 @@
           <section class="panel panel-form">
             <div class="panel-head">
               <h2>输入</h2>
-              <p>导入图片，设定单色或多色绘制参数，然后发送到 ESP32 开始绘制。</p>
+              <p>导入图片，设定单色、多色或官方色绘制参数，然后发送到 ESP32 开始绘制。</p>
             </div>
 
             <label class="file-drop" for="image-input">
@@ -57,7 +57,7 @@
             <div class="execution-box mono-note-box">
               <div class="panel-head compact">
                 <h2>绘制模式</h2>
-                <p>当前固定走 128x128 + 1 号笔 + 画布中心起步。单色模式画黑白图，多色模式会先把图片量化成目标色阶。</p>
+                <p>当前固定走 128x128 + 1 号笔 + 画布中心起步。单色模式画黑白图，多色模式会先自适应量化，官方色模式会量化到游戏内置的 7x12 色盘。</p>
               </div>
 
               <p class="hint" id="studio-mode-hint">
@@ -90,17 +90,21 @@
                 <select id="color-mode-select">
                   <option value="mono" selected>单色绘制</option>
                   <option value="palette">多色绘制</option>
+                  <option value="official">官方色绘制</option>
                 </select>
               </label>
 
               <label>
                 <span>色阶数量</span>
                 <select id="color-count-select">
+                  <option value="8">8 色</option>
                   <option value="9">9 色</option>
+                  <option value="16">16 色</option>
                   <option value="18">18 色</option>
                   <option value="24">24 色</option>
                   <option value="32" selected>32 色</option>
                   <option value="64">64 色</option>
+                  <option value="84">84 色</option>
                   <option value="128">128 色</option>
                 </select>
               </label>
@@ -180,10 +184,21 @@
             </div>
           </section>
 
+          <section id="official-palette-panel" class="panel panel-official-palette hidden">
+            <div class="panel-head">
+              <h2>官方色盘预览</h2>
+              <p id="official-palette-summary">
+                这里会显示程序当前使用的 7x12 官方色盘，并高亮这张图实际量化到的颜色格。
+              </p>
+            </div>
+
+            <div id="official-palette-grid" class="official-palette-grid"></div>
+          </section>
+
           <section class="panel panel-script">
             <div class="panel-head">
               <h2>脚本</h2>
-              <p>这是当前协议下可直接发送给设备的动作脚本。</p>
+              <p>这是当前协议下可直接发送给设备的动作脚本。官方色绘制会额外插入内置色盘配置命令。</p>
             </div>
 
             <textarea id="commands-output" class="code-block" spellcheck="false" placeholder="生成后会在这里显示命令脚本"></textarea>

@@ -2,6 +2,7 @@ import path from "node:path";
 
 import type { ColorMode, DrawingProfile, ResizeMode } from "../types.js";
 import { DEFAULT_PALETTE } from "../config/defaultProfile.js";
+import { OFFICIAL_PALETTE } from "../config/officialPalette.js";
 import { normalizeHexColor } from "../utils/colors.js";
 
 export interface CliOptions {
@@ -105,7 +106,10 @@ export function parseCliArgs(rawArgs: string[]): CliOptions {
         index += 1;
         break;
       case "--mode":
-        options.mode = readValue(rawArgs, index, arg) === "palette" ? "palette" : "mono";
+        {
+          const value = readValue(rawArgs, index, arg);
+          options.mode = value === "palette" || value === "official" ? value : "mono";
+        }
         index += 1;
         break;
       case "--palette":
@@ -151,7 +155,31 @@ export function applyCliOptions(profile: DrawingProfile, options: CliOptions): D
   const width = options.size ?? options.width ?? profile.canvasWidth;
   const height = options.size ?? options.height ?? profile.canvasHeight;
   const colorMode =
-    options.mode ?? (options.colors && options.colors > 2 ? "palette" : profile.colorMode);
+    options.mode ??
+    (options.colors && options.colors > 2
+      ? "palette"
+      : profile.colorMode === "official"
+        ? "official"
+        : profile.colorMode);
+
+  if (colorMode === "official") {
+    const colorCount = Math.max(
+      2,
+      Math.min(options.colors ?? profile.colorCount ?? 32, OFFICIAL_PALETTE.length),
+    );
+    return {
+      ...profile,
+      baudRate: options.baud ?? profile.baudRate,
+      canvasWidth: width,
+      canvasHeight: height,
+      resizeMode: options.resizeMode ?? profile.resizeMode,
+      colorMode,
+      colorCount,
+      monoThreshold: options.threshold ?? profile.monoThreshold,
+      palette: OFFICIAL_PALETTE.slice(),
+    };
+  }
+
   const requestedColors =
     colorMode === "mono"
       ? 2
@@ -166,6 +194,7 @@ export function applyCliOptions(profile: DrawingProfile, options: CliOptions): D
     canvasHeight: height,
     resizeMode: options.resizeMode ?? profile.resizeMode,
     colorMode,
+    colorCount: requestedColors,
     monoThreshold: options.threshold ?? profile.monoThreshold,
     palette,
   };
@@ -199,7 +228,7 @@ export function printHelp(): string {
     "  --size <n>               Square canvas size override",
     "  --width <n>              Canvas width override",
     "  --height <n>             Canvas height override",
-    "  --mode mono|palette      Quantization mode",
+    "  --mode mono|palette|official Quantization mode",
     "  --colors <n>             Palette size when using palette mode",
     "  --threshold <n>          Mono threshold (0-255)",
     '  --palette <csv>          Palette override, e.g. "#000000,#ffffff,#ff0000,#0000ff"',
