@@ -15,6 +15,8 @@ const state = {
     target: "serial",
     canvasSize: 128,
     brushSize: 1,
+    colorMode: "mono",
+    colorCount: 32,
     profile: {
       baudRate: 115200,
       ackTimeoutMs: 5000,
@@ -85,7 +87,9 @@ const els = {
   studioModeHint: document.getElementById("studio-mode-hint"),
   sizeSelect: document.getElementById("size-select"),
   brushSizeSelect: document.getElementById("brush-size-select"),
-  resizeSelect: document.getElementById("resize-select"),
+  colorModeSelect: document.getElementById("color-mode-select"),
+  colorCountSelect: document.getElementById("color-count-select"),
+  thresholdLabel: document.getElementById("threshold-label"),
   thresholdRange: document.getElementById("threshold-range"),
   thresholdValue: document.getElementById("threshold-value"),
   studioPortSelect: document.getElementById("studio-port-select"),
@@ -167,6 +171,16 @@ els.sizeSelect.addEventListener("change", () => {
 
 els.brushSizeSelect.addEventListener("change", () => {
   state.studio.brushSize = Number(els.brushSizeSelect.value);
+  syncStudioUi();
+});
+
+els.colorModeSelect.addEventListener("change", () => {
+  state.studio.colorMode = els.colorModeSelect.value === "palette" ? "palette" : "mono";
+  syncStudioUi();
+});
+
+els.colorCountSelect.addEventListener("change", () => {
+  state.studio.colorCount = Number(els.colorCountSelect.value || state.studio.colorCount);
   syncStudioUi();
 });
 
@@ -286,8 +300,9 @@ async function generateStudioCommands({ logPrefix }) {
         imageDataUrl: state.imageDataUrl,
         size: state.studio.canvasSize,
         brushSize: state.studio.brushSize,
-        mode: "mono",
-        resizeMode: els.resizeSelect.value,
+        mode: state.studio.colorMode,
+        colors: state.studio.colorCount,
+        resizeMode: "cover",
         threshold: Number(els.thresholdRange.value),
         previewScale: 12,
       }),
@@ -306,6 +321,7 @@ async function generateStudioCommands({ logPrefix }) {
       commandRetryCount: payload.profile.commandRetryCount ?? 1,
     };
     state.studio.brushSize = payload.profile.brushSize ?? state.studio.brushSize;
+    state.studio.colorMode = payload.profile.colorMode === "palette" ? "palette" : "mono";
 
     els.commandsOutput.value = payload.commands.join("\n");
     els.previewImage.src = payload.previewDataUrl;
@@ -314,7 +330,7 @@ async function generateStudioCommands({ logPrefix }) {
     els.statColors.textContent =
       payload.profile.colorMode === "mono"
         ? "黑 / 白"
-        : payload.stats.usedColorIndexes.join(", ");
+        : `${payload.stats.usedColorIndexes.length} / ${state.studio.colorCount} 色`;
     els.statPixels.textContent = String(payload.stats.totalPixels);
     els.statCommands.textContent = String(payload.stats.commandCount);
     els.statRuntime.textContent = payload.stats.estimatedRuntimeLabel;
@@ -534,7 +550,6 @@ function setStudioBusy(isBusy) {
   els.quickStartButton.disabled = isBusy;
   els.generateButton.disabled = isBusy;
   els.refreshPortsButton.disabled = isBusy;
-  els.resizeSelect.disabled = isBusy;
   els.thresholdRange.disabled = isBusy;
   els.sizeSelect.disabled = isBusy;
   els.brushSizeSelect.disabled = isBusy;
@@ -817,7 +832,7 @@ function renderStudioConnectionStatus() {
     tone = "success";
     pill = "已连接";
     title = "手柄已连接，可以开始绘制";
-    detail = `当前开发板已经处于可发送状态，可以把单色脚本发到 ${state.selectedPortPath || "串口设备"}。`;
+    detail = `当前开发板已经处于可发送状态，可以把绘制脚本发到 ${state.selectedPortPath || "串口设备"}。`;
   } else {
     tone = "warning";
     pill = "需要测试";
@@ -875,14 +890,21 @@ function syncStudioUi() {
 
   els.sizeSelect.value = String(state.studio.canvasSize);
   els.brushSizeSelect.value = String(state.studio.brushSize);
+  els.colorModeSelect.value = state.studio.colorMode;
+  els.colorCountSelect.value = String(state.studio.colorCount);
   els.studioModeHint.textContent = monoBrushReady
-    ? "深色像素会绘制，浅色像素会保留为空白背景。当前按 128x128 + 1 号笔 + 画布中心起步生成，不需要切换调色板。"
+    ? state.studio.colorMode === "mono"
+      ? "深色像素会绘制，浅色像素会保留为空白背景。当前会把图片完整铺到 128x128 画布，再按 1 号笔和画布中心起步生成。"
+      : `当前会先把图片自动量化成 ${state.studio.colorCount} 色，再按 128x128 画布和 1 号笔生成绘制脚本。`
     : `当前已选 ${state.studio.brushSize} 号画笔，但脚本生成这一步先只支持 1 号笔。建议先切回 1 号笔，把中心起步这条链路跑通。`;
   els.studioPortSelect.disabled = state.studio.busy || executionActive;
   els.refreshPortsButton.disabled = state.studio.busy || executionActive;
   els.sizeSelect.disabled = state.studio.busy || executionActive;
   els.brushSizeSelect.disabled = state.studio.busy || executionActive;
-  els.resizeSelect.disabled = state.studio.busy || executionActive;
+  els.colorModeSelect.disabled = state.studio.busy || executionActive;
+  els.colorCountSelect.disabled =
+    state.studio.busy || executionActive || state.studio.colorMode !== "palette";
+  els.thresholdLabel.textContent = state.studio.colorMode === "mono" ? "单色阈值" : "多色模式下不使用阈值";
   els.thresholdRange.disabled = state.studio.busy || executionActive;
   els.quickStartButton.textContent = "一键开始绘制";
   els.executeButton.textContent = "执行现有脚本";
@@ -905,6 +927,14 @@ function syncStudioUi() {
   els.resumeExecutionButton.disabled = !executionPaused;
   els.stopExecutionButton.disabled = !(executionRunning || executionPaused);
   renderStudioExecutionStatus();
+
+  if (state.studio.colorMode === "palette") {
+    els.thresholdRange.disabled = true;
+    els.thresholdValue.textContent = "-";
+  } else {
+    els.thresholdRange.disabled = state.studio.busy || executionActive;
+    els.thresholdValue.textContent = els.thresholdRange.value;
+  }
 
   if (!monoBrushReady) {
     els.executionHint.textContent =
@@ -938,7 +968,10 @@ function syncStudioUi() {
     return;
   }
 
-  els.executionHint.textContent = `当前会把 128x128 的黑白脚本通过串口发送到 ${state.selectedPortPath}，由 ESP32 从画布中心起步，继续翻译成方向键移动与 A 绘制。`;
+  els.executionHint.textContent =
+    state.studio.colorMode === "mono"
+      ? `当前会把 128x128 的黑白脚本通过串口发送到 ${state.selectedPortPath}，由 ESP32 从画布中心起步，继续翻译成方向键移动与 A 绘制。`
+      : `当前会把 128x128 的多色脚本通过串口发送到 ${state.selectedPortPath}，由 ESP32 从画布中心起步，继续翻译成颜色切换、方向键移动与 A 绘制。`;
   renderStudioConnectionStatus();
 }
 

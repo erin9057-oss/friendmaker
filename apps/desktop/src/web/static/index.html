@@ -34,7 +34,7 @@
           <section class="panel panel-form">
             <div class="panel-head">
               <h2>输入</h2>
-              <p>导入图片，设定单色阈值、1 号笔和执行参数。</p>
+              <p>导入图片，设定单色或多色绘制参数，然后发送到 ESP32 开始绘制。</p>
             </div>
 
             <label class="file-drop" for="image-input">
@@ -56,8 +56,8 @@
 
             <div class="execution-box mono-note-box">
               <div class="panel-head compact">
-                <h2>单色绘制</h2>
-                <p>当前版本先固定走 128x128 + 1 号笔 + 画布中心起步，把 A 落笔和方向键逐点移动这条链路跑稳。</p>
+                <h2>绘制模式</h2>
+                <p>当前固定走 128x128 + 1 号笔 + 画布中心起步。单色模式画黑白图，多色模式会先把图片量化成目标色阶。</p>
               </div>
 
               <p class="hint" id="studio-mode-hint">
@@ -86,16 +86,28 @@
               </label>
 
               <label>
-                <span>缩放</span>
-                <select id="resize-select">
-                  <option value="contain">Contain</option>
-                  <option value="cover">Cover</option>
+                <span>绘制模式</span>
+                <select id="color-mode-select">
+                  <option value="mono" selected>单色绘制</option>
+                  <option value="palette">多色绘制</option>
+                </select>
+              </label>
+
+              <label>
+                <span>色阶数量</span>
+                <select id="color-count-select">
+                  <option value="9">9 色</option>
+                  <option value="18">18 色</option>
+                  <option value="24">24 色</option>
+                  <option value="32" selected>32 色</option>
+                  <option value="64">64 色</option>
+                  <option value="128">128 色</option>
                 </select>
               </label>
             </div>
 
             <label class="range-row">
-              <span>单色阈值</span>
+              <span id="threshold-label">单色阈值</span>
               <input id="threshold-range" type="range" min="0" max="255" value="128" />
               <strong id="threshold-value">128</strong>
             </label>

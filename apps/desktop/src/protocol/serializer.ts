@@ -12,6 +12,8 @@ export function serializeCommand(command: DrawCommand): string {
       return command.button;
     case "color":
       return `C ${command.index}`;
+    case "paletteConfig":
+      return `PC ${command.slot} ${command.colorHex}`;
     case "wait":
       return `W ${command.ms}`;
     case "pause":

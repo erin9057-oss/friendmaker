@@ -89,7 +89,7 @@ export const DEFAULT_PROFILE: DrawingProfile = {
   baudRate: 115200,
   canvasWidth: 128,
   canvasHeight: 128,
-  resizeMode: "contain",
+  resizeMode: "cover",
   cellMoveDuration: 80,
   inputDelay: 40,
   homeDuration: 1500,

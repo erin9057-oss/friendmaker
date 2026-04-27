@@ -5,8 +5,11 @@ import {
   endCommand,
   homeCommand,
   moveCommand,
+  paletteConfigCommand,
   type DrawCommand,
 } from "../protocol/commands.js";
+
+const PALETTE_SLOT_COUNT = 9;
 
 function getPixelsByColor(pixelMap: PixelMap, colorIndex: number): Pixel[] {
   const rows = pixelMap.map((row) => row.filter((pixel) => pixel.colorIndex === colorIndex));
@@ -78,11 +81,26 @@ function resolveStartOffset(profile: DrawingProfile): { dx: number; dy: number }
 function shouldStartFromCanvasCenter(profile: DrawingProfile): boolean {
   return (
     profile.startCursor === "center" &&
-    profile.colorMode === "mono" &&
     profile.canvasWidth === 128 &&
     profile.canvasHeight === 128 &&
     profile.brushSize === 1
   );
+}
+
+function getUsedPaletteColors(pixelMap: PixelMap): Array<{ colorIndex: number; colorHex: string }> {
+  const colorByIndex = new Map<number, string>();
+
+  for (const row of pixelMap) {
+    for (const pixel of row) {
+      if (!colorByIndex.has(pixel.colorIndex)) {
+        colorByIndex.set(pixel.colorIndex, pixel.colorHex);
+      }
+    }
+  }
+
+  return Array.from(colorByIndex.entries())
+    .sort((left, right) => left[0] - right[0])
+    .map(([colorIndex, colorHex]) => ({ colorIndex, colorHex }));
 }
 
 export function generateScanlineCommands(
@@ -108,28 +126,53 @@ export function generateScanlineCommands(
     }
   }
 
-  const usedColorIndexes =
-    profile.colorMode === "mono"
-      ? [profile.startColorIndex]
-      : Array.from(new Set(pixelMap.flatMap((row) => row.map((pixel) => pixel.colorIndex)))).sort(
-          (a, b) => a - b,
-        );
-  let selectedColor: number | null = profile.colorMode === "mono" ? profile.startColorIndex : null;
+  if (profile.colorMode === "mono") {
+    const usedColorIndexes = [profile.startColorIndex];
+    let selectedColor: number | null = profile.startColorIndex;
 
-  for (const colorIndex of usedColorIndexes) {
-    if (selectedColor !== colorIndex) {
-      commands.push(colorCommand(colorIndex));
-      selectedColor = colorIndex;
+    for (const colorIndex of usedColorIndexes) {
+      if (selectedColor !== colorIndex) {
+        commands.push(colorCommand(colorIndex));
+        selectedColor = colorIndex;
+      }
+
+      const orderedPixels = shouldStartFromCanvasCenter(profile)
+        ? rotatePixelsToNearestStart(getPixelsByColor(pixelMap, colorIndex), current)
+        : getPixelsByColor(pixelMap, colorIndex);
+
+      for (const pixel of orderedPixels) {
+        commands.push(...moveTo(current, pixel));
+        commands.push(drawCommand(profile.drawButton));
+        current = { x: pixel.x, y: pixel.y };
+      }
     }
+  } else {
+    const usedColors = getUsedPaletteColors(pixelMap);
 
-    const orderedPixels = shouldStartFromCanvasCenter(profile)
-      ? rotatePixelsToNearestStart(getPixelsByColor(pixelMap, colorIndex), current)
-      : getPixelsByColor(pixelMap, colorIndex);
+    for (let batchStart = 0; batchStart < usedColors.length; batchStart += PALETTE_SLOT_COUNT) {
+      const batch = usedColors.slice(batchStart, batchStart + PALETTE_SLOT_COUNT);
+      let selectedSlot: number | null = null;
 
-    for (const pixel of orderedPixels) {
-      commands.push(...moveTo(current, pixel));
-      commands.push(drawCommand(profile.drawButton));
-      current = { x: pixel.x, y: pixel.y };
+      batch.forEach((color, slotIndex) => {
+        commands.push(paletteConfigCommand(slotIndex, color.colorHex));
+      });
+
+      for (const [slotIndex, color] of batch.entries()) {
+        if (selectedSlot !== slotIndex) {
+          commands.push(colorCommand(slotIndex));
+          selectedSlot = slotIndex;
+        }
+
+        const orderedPixels = shouldStartFromCanvasCenter(profile)
+          ? rotatePixelsToNearestStart(getPixelsByColor(pixelMap, color.colorIndex), current)
+          : getPixelsByColor(pixelMap, color.colorIndex);
+
+        for (const pixel of orderedPixels) {
+          commands.push(...moveTo(current, pixel));
+          commands.push(drawCommand(profile.drawButton));
+          current = { x: pixel.x, y: pixel.y };
+        }
+      }
     }
   }
 
@@ -153,6 +196,8 @@ export function estimateRuntimeMs(commands: DrawCommand[], profile: DrawingProfi
         return total + profile.buttonPressDuration + profile.inputDelay;
       case "color":
         return total + profile.colorChangeDuration;
+      case "paletteConfig":
+        return total + profile.colorChangeDuration * 6;
       case "wait":
         return total + command.ms;
       case "pause":

@@ -13,8 +13,11 @@ class SwitchController {
   void moveCursor(int dx, int dy);
   void drawStroke();
   void pressButton(ControllerButton button);
+  void holdButton(ControllerButton button, uint16_t holdMs);
+  void tapButton(ControllerButton button, uint16_t count);
   void pressButtons(uint32_t buttonsMask);
   void selectColor(int index);
+  void configurePaletteSlot(int index, uint8_t red, uint8_t green, uint8_t blue);
   bool resetBluetooth();
   void pause();
   void resume();

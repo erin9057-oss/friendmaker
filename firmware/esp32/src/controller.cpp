@@ -1,6 +1,76 @@
 #include "controller.h"
 
+#include <math.h>
+
 #include "config.h"
+
+namespace {
+
+struct HsvColor {
+  float hue;
+  float saturation;
+  float value;
+};
+
+int clampPaletteSlotIndex(int index) {
+  if (index < 0) {
+    return 0;
+  }
+
+  if (index >= COLOR_PALETTE_SLOT_COUNT) {
+    return COLOR_PALETTE_SLOT_COUNT - 1;
+  }
+
+  return index;
+}
+
+uint8_t scaleChannelToSteps(float value, uint8_t steps) {
+  if (steps == 0) {
+    return 0;
+  }
+
+  const float clamped = value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value);
+  return static_cast<uint8_t>(roundf(clamped * steps));
+}
+
+HsvColor rgbToHsv(uint8_t red, uint8_t green, uint8_t blue) {
+  const float r = static_cast<float>(red) / 255.0f;
+  const float g = static_cast<float>(green) / 255.0f;
+  const float b = static_cast<float>(blue) / 255.0f;
+
+  const float maxChannel = fmaxf(r, fmaxf(g, b));
+  const float minChannel = fminf(r, fminf(g, b));
+  const float delta = maxChannel - minChannel;
+
+  float hue = 0.0f;
+
+  if (delta > 0.0f) {
+    if (maxChannel == r) {
+      hue = 60.0f * fmodf(((g - b) / delta), 6.0f);
+    } else if (maxChannel == g) {
+      hue = 60.0f * (((b - r) / delta) + 2.0f);
+    } else {
+      hue = 60.0f * (((r - g) / delta) + 4.0f);
+    }
+  }
+
+  if (hue < 0.0f) {
+    hue += 360.0f;
+  }
+
+  return {
+      hue,
+      maxChannel <= 0.0f ? 0.0f : delta / maxChannel,
+      maxChannel,
+  };
+}
+
+void pressPaletteMenuButton(ControllerTransport &transport, ControllerButton button) {
+  transport.pressButton(
+      button, COLOR_PALETTE_MENU_PRESS_DURATION_MS, COLOR_PALETTE_MENU_INPUT_DELAY_MS);
+}
+
+}  // namespace
 
 SwitchController::SwitchController(ControllerTransport &transport) : transport_(transport) {}
 
@@ -43,6 +113,19 @@ void SwitchController::pressButton(ControllerButton button) {
   transport_.pressButton(button, BUTTON_PRESS_DURATION_MS, INPUT_DELAY_MS);
 }
 
+void SwitchController::holdButton(ControllerButton button, uint16_t holdMs) {
+  waitUntilReady();
+  transport_.pressButton(button, holdMs, INPUT_DELAY_MS);
+}
+
+void SwitchController::tapButton(ControllerButton button, uint16_t count) {
+  waitUntilReady();
+
+  for (uint16_t step = 0; step < count; step += 1) {
+    transport_.pressButton(button, BUTTON_PRESS_DURATION_MS, INPUT_DELAY_MS);
+  }
+}
+
 void SwitchController::pressButtons(uint32_t buttonsMask) {
   waitUntilReady();
   transport_.pressButtons(buttonsMask, BUTTON_PRESS_DURATION_MS, INPUT_DELAY_MS);
@@ -50,16 +133,85 @@ void SwitchController::pressButtons(uint32_t buttonsMask) {
 
 void SwitchController::selectColor(int index) {
   waitUntilReady();
+  const int slotIndex = clampPaletteSlotIndex(index);
 
-  // Placeholder timing for MVP firmware. Replace this with game-specific
-  // color-menu navigation once the target drawing UI is fixed.
-  transport_.pressButton(ControllerButton::X, BUTTON_PRESS_DURATION_MS, INPUT_DELAY_MS);
+  // Drawing page flow:
+  // 1. Y opens the palette selector.
+  // 2. The selector has extra non-palette entries above the 9 palette slots,
+  //    so we normalize by pushing all the way to the bottom palette slot first.
+  // 3. Up moves back to the requested palette slot.
+  // 3. A applies the current slot.
+  // 4. B closes the palette selector and returns to drawing.
+  transport_.pressButton(ControllerButton::Y, BUTTON_PRESS_DURATION_MS, INPUT_DELAY_MS);
+  delay(COLOR_PALETTE_MENU_OPEN_SETTLE_MS);
 
-  for (int step = 0; step < index; step += 1) {
-    transport_.pressButton(ControllerButton::DpadRight, BUTTON_PRESS_DURATION_MS, INPUT_DELAY_MS);
+  for (int step = 0; step < COLOR_PALETTE_RESET_TO_BOTTOM_STEPS; step += 1) {
+    pressPaletteMenuButton(transport_, ControllerButton::DpadDown);
   }
 
+  for (int step = 0; step < (COLOR_PALETTE_SLOT_COUNT - 1 - slotIndex); step += 1) {
+    pressPaletteMenuButton(transport_, ControllerButton::DpadUp);
+  }
+
+  pressPaletteMenuButton(transport_, ControllerButton::A);
+  pressPaletteMenuButton(transport_, ControllerButton::B);
+  delay(INPUT_DELAY_MS);
+}
+
+void SwitchController::configurePaletteSlot(int index, uint8_t red, uint8_t green, uint8_t blue) {
+  waitUntilReady();
+
+  const int slotIndex = clampPaletteSlotIndex(index);
+  const HsvColor hsv = rgbToHsv(red, green, blue);
+  const uint8_t hueSteps =
+      static_cast<uint8_t>(roundf((hsv.hue / 360.0f) * COLOR_PALETTE_EDITOR_HUE_STEP_COUNT));
+  const uint8_t saturationSteps =
+      scaleChannelToSteps(hsv.saturation, COLOR_PALETTE_EDITOR_SATURATION_STEP_COUNT);
+  const uint8_t valueSteps = scaleChannelToSteps(hsv.value, COLOR_PALETTE_EDITOR_VALUE_STEP_COUNT);
+
+  // Palette selection page.
+  transport_.pressButton(ControllerButton::Y, BUTTON_PRESS_DURATION_MS, INPUT_DELAY_MS);
+  delay(COLOR_PALETTE_MENU_OPEN_SETTLE_MS);
+
+  for (int step = 0; step < COLOR_PALETTE_RESET_TO_BOTTOM_STEPS; step += 1) {
+    pressPaletteMenuButton(transport_, ControllerButton::DpadDown);
+  }
+
+  for (int step = 0; step < (COLOR_PALETTE_SLOT_COUNT - 1 - slotIndex); step += 1) {
+    pressPaletteMenuButton(transport_, ControllerButton::DpadUp);
+  }
+
+  // Enter palette editor for the current slot.
+  pressPaletteMenuButton(transport_, ControllerButton::Y);
+  delay(COLOR_PALETTE_EDITOR_OPEN_SETTLE_MS);
+
+  // Reset the editor state so every slot starts from the same origin:
+  // move the analog cursor to the bottom-left of the color square and
+  // drive the hue slider back to its left-most stop.
+  transport_.moveDirection(-1, 1, COLOR_PALETTE_EDITOR_RESET_STICK_HOLD_MS, INPUT_DELAY_MS);
+
+  for (int step = 0; step < COLOR_PALETTE_EDITOR_HUE_RESET_STEPS; step += 1) {
+    transport_.pressButton(ControllerButton::ZL, BUTTON_PRESS_DURATION_MS, INPUT_DELAY_MS);
+  }
+
+  for (int step = 0; step < hueSteps; step += 1) {
+    transport_.pressButton(ControllerButton::ZR, BUTTON_PRESS_DURATION_MS, INPUT_DELAY_MS);
+  }
+
+  if (saturationSteps > 0) {
+    transport_.moveDirection(
+        1, 0, static_cast<uint16_t>(saturationSteps) * COLOR_PALETTE_EDITOR_MOVE_STEP_MS, INPUT_DELAY_MS);
+  }
+
+  if (valueSteps > 0) {
+    transport_.moveDirection(
+        0, -1, static_cast<uint16_t>(valueSteps) * COLOR_PALETTE_EDITOR_MOVE_STEP_MS, INPUT_DELAY_MS);
+  }
+
+  // Exit editor, apply the slot, then go back to drawing mode.
+  transport_.pressButton(ControllerButton::B, BUTTON_PRESS_DURATION_MS, INPUT_DELAY_MS);
   transport_.pressButton(ControllerButton::A, BUTTON_PRESS_DURATION_MS, INPUT_DELAY_MS);
+  transport_.pressButton(ControllerButton::B, BUTTON_PRESS_DURATION_MS, INPUT_DELAY_MS);
   delay(INPUT_DELAY_MS);
 }
 

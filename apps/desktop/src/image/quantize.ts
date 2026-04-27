@@ -1,26 +1,113 @@
+import * as iq from "image-q";
+
 import type { ColorMode, Pixel, PixelMap, RgbColor } from "../types.js";
 import {
-  colorDistanceSquared,
   compositeOnWhite,
   luminance,
-  normalizeHexColor,
-  parseHexColor,
+  rgbToHex,
 } from "../utils/colors.js";
 
-function closestPaletteIndex(color: RgbColor, palette: RgbColor[]): number {
-  let bestIndex = 0;
-  let bestDistance = Number.POSITIVE_INFINITY;
+function buildMonoPixelMap(
+  image: {
+    width: number;
+    height: number;
+    channels: number;
+    data: Buffer;
+  },
+  options: {
+    monoThreshold: number;
+    palette: string[];
+  },
+): PixelMap {
+  const monoPalette = options.palette.slice(0, 2);
+  const pixelMap: PixelMap = [];
 
-  for (const [index, candidate] of palette.entries()) {
-    const distance = colorDistanceSquared(color, candidate);
+  for (let y = 0; y < image.height; y += 1) {
+    const row: Pixel[] = [];
 
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      bestIndex = index;
+    for (let x = 0; x < image.width; x += 1) {
+      const offset = (y * image.width + x) * image.channels;
+      const r = image.data[offset] ?? 0;
+      const g = image.data[offset + 1] ?? 0;
+      const b = image.data[offset + 2] ?? 0;
+      const a = image.channels >= 4 ? (image.data[offset + 3] ?? 255) : 255;
+      const rgb = compositeOnWhite(r, g, b, a);
+      const colorIndex = luminance(rgb) < options.monoThreshold ? 0 : Math.min(1, monoPalette.length - 1);
+
+      row.push({
+        x,
+        y,
+        colorIndex,
+        colorHex: monoPalette[colorIndex] ?? monoPalette[0] ?? "#000000",
+      });
     }
+
+    pixelMap.push(row);
   }
 
-  return bestIndex;
+  return pixelMap;
+}
+
+function buildPalettePixelMap(
+  image: {
+    width: number;
+    height: number;
+    channels: number;
+    data: Buffer;
+  },
+  options: {
+    palette: string[];
+  },
+): PixelMap {
+  const source = iq.utils.PointContainer.fromBuffer(image.data, image.width, image.height);
+  const palette = iq.buildPaletteSync([source], {
+    colors: Math.max(2, options.palette.length),
+    paletteQuantization: "wuquant",
+    colorDistanceFormula: "euclidean-bt709",
+  });
+  const reduced = iq.applyPaletteSync(source, palette, {
+    colorDistanceFormula: "euclidean-bt709",
+    imageQuantization: "nearest",
+  });
+  const palettePoints = palette.getPointContainer().getPointArray();
+  const paletteHexes = palettePoints.map((point) =>
+    rgbToHex({ r: point.r, g: point.g, b: point.b }),
+  );
+  const paletteIndexByHex = new Map<string, number>();
+
+  paletteHexes.forEach((hex, index) => {
+    if (!paletteIndexByHex.has(hex)) {
+      paletteIndexByHex.set(hex, index);
+    }
+  });
+
+  const reducedPixels = reduced.toUint8Array();
+  const pixelMap: PixelMap = [];
+
+  for (let y = 0; y < image.height; y += 1) {
+    const row: Pixel[] = [];
+
+    for (let x = 0; x < image.width; x += 1) {
+      const offset = (y * image.width + x) * 4;
+      const colorHex = rgbToHex({
+        r: reducedPixels[offset] ?? 0,
+        g: reducedPixels[offset + 1] ?? 0,
+        b: reducedPixels[offset + 2] ?? 0,
+      });
+      const colorIndex = paletteIndexByHex.get(colorHex) ?? 0;
+
+      row.push({
+        x,
+        y,
+        colorIndex,
+        colorHex,
+      });
+    }
+
+    pixelMap.push(row);
+  }
+
+  return pixelMap;
 }
 
 export function quantizePixels(
@@ -36,38 +123,9 @@ export function quantizePixels(
     palette: string[];
   },
 ): PixelMap {
-  const normalizedPalette = options.palette.map(normalizeHexColor);
-  const palette = normalizedPalette.map(parseHexColor);
-  const pixelMap: PixelMap = [];
-
-  for (let y = 0; y < image.height; y += 1) {
-    const row: Pixel[] = [];
-
-    for (let x = 0; x < image.width; x += 1) {
-      const offset = (y * image.width + x) * image.channels;
-      const r = image.data[offset] ?? 0;
-      const g = image.data[offset + 1] ?? 0;
-      const b = image.data[offset + 2] ?? 0;
-      const a = image.channels >= 4 ? (image.data[offset + 3] ?? 255) : 255;
-      const rgb = compositeOnWhite(r, g, b, a);
-
-      const colorIndex =
-        options.colorMode === "mono"
-          ? luminance(rgb) < options.monoThreshold
-            ? 0
-            : Math.min(1, palette.length - 1)
-          : closestPaletteIndex(rgb, palette);
-
-      row.push({
-        x,
-        y,
-        colorIndex,
-        colorHex: normalizedPalette[colorIndex] ?? normalizedPalette[0] ?? "#000000",
-      });
-    }
-
-    pixelMap.push(row);
+  if (options.colorMode === "mono") {
+    return buildMonoPixelMap(image, options);
   }
 
-  return pixelMap;
+  return buildPalettePixelMap(image, options);
 }

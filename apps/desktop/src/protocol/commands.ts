@@ -6,6 +6,7 @@ export type DrawCommand =
   | { type: "draw"; button: ControllerButton }
   | { type: "press"; button: ControllerButton }
   | { type: "color"; index: number }
+  | { type: "paletteConfig"; slot: number; colorHex: string }
   | { type: "wait"; ms: number }
   | { type: "pause" }
   | { type: "resume" }
@@ -29,6 +30,10 @@ export function pressButtonCommand(button: ControllerButton): DrawCommand {
 
 export function colorCommand(index: number): DrawCommand {
   return { type: "color", index };
+}
+
+export function paletteConfigCommand(slot: number, colorHex: string): DrawCommand {
+  return { type: "paletteConfig", slot, colorHex };
 }
 
 export function waitCommand(ms: number): DrawCommand {

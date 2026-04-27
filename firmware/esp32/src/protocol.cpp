@@ -2,6 +2,8 @@
 
 namespace {
 
+ControllerButton parseButton(const String &line, bool &ok);
+
 bool parseTwoInts(const String &value, int &first, int &second) {
   const int firstSpace = value.indexOf(' ');
   if (firstSpace < 0) {
@@ -25,6 +27,100 @@ bool parseOneInt(const String &value, int &result) {
   }
 
   result = value.substring(firstSpace + 1).toInt();
+  return true;
+}
+
+bool parseHexColorToken(const String &value, uint8_t &red, uint8_t &green, uint8_t &blue) {
+  String token = value;
+  token.trim();
+
+  if (token.startsWith("#")) {
+    token = token.substring(1);
+  }
+
+  if (token.length() != 6) {
+    return false;
+  }
+
+  const long parsed = strtol(token.c_str(), nullptr, 16);
+  red = static_cast<uint8_t>((parsed >> 16) & 0xFF);
+  green = static_cast<uint8_t>((parsed >> 8) & 0xFF);
+  blue = static_cast<uint8_t>(parsed & 0xFF);
+  return true;
+}
+
+bool parsePaletteConfigCommand(
+    const String &line, int &slotIndex, uint8_t &red, uint8_t &green, uint8_t &blue) {
+  if (!line.startsWith("PC ")) {
+    return false;
+  }
+
+  const int firstSpace = line.indexOf(' ');
+  const int secondSpace = line.indexOf(' ', firstSpace + 1);
+
+  if (secondSpace < 0) {
+    return false;
+  }
+
+  slotIndex = line.substring(firstSpace + 1, secondSpace).toInt();
+  return parseHexColorToken(line.substring(secondSpace + 1), red, green, blue);
+}
+
+bool parseHoldButtonCommand(const String &line, ControllerButton &button, uint16_t &holdMs) {
+  if (!line.startsWith("HOLD ")) {
+    return false;
+  }
+
+  const int firstSpace = line.indexOf(' ');
+  const int secondSpace = line.indexOf(' ', firstSpace + 1);
+
+  if (secondSpace < 0) {
+    return false;
+  }
+
+  bool ok = false;
+  button = parseButton(line.substring(firstSpace + 1, secondSpace), ok);
+
+  if (!ok) {
+    return false;
+  }
+
+  const int parsed = line.substring(secondSpace + 1).toInt();
+
+  if (parsed <= 0 || parsed > 60000) {
+    return false;
+  }
+
+  holdMs = static_cast<uint16_t>(parsed);
+  return true;
+}
+
+bool parseTapButtonCommand(const String &line, ControllerButton &button, uint16_t &count) {
+  if (!line.startsWith("TAP ")) {
+    return false;
+  }
+
+  const int firstSpace = line.indexOf(' ');
+  const int secondSpace = line.indexOf(' ', firstSpace + 1);
+
+  if (secondSpace < 0) {
+    return false;
+  }
+
+  bool ok = false;
+  button = parseButton(line.substring(firstSpace + 1, secondSpace), ok);
+
+  if (!ok) {
+    return false;
+  }
+
+  const int parsed = line.substring(secondSpace + 1).toInt();
+
+  if (parsed <= 0 || parsed > 2000) {
+    return false;
+  }
+
+  count = static_cast<uint16_t>(parsed);
   return true;
 }
 
@@ -267,6 +363,39 @@ bool executeCommand(const String &line, SwitchController &controller, String &er
     return true;
   }
 
+  ControllerButton holdButton = ControllerButton::A;
+  uint16_t holdMs = 0;
+
+  if (parseHoldButtonCommand(line, holdButton, holdMs)) {
+    controller.holdButton(holdButton, holdMs);
+    Serial.printf("INFO action=hold button=%s ms=%u\n", buttonName(holdButton), holdMs);
+    return true;
+  }
+
+  uint16_t tapCount = 0;
+
+  if (parseTapButtonCommand(line, holdButton, tapCount)) {
+    controller.tapButton(holdButton, tapCount);
+    Serial.printf("INFO action=tap button=%s count=%u\n", buttonName(holdButton), tapCount);
+    return true;
+  }
+
+  uint8_t paletteRed = 0;
+  uint8_t paletteGreen = 0;
+  uint8_t paletteBlue = 0;
+  int paletteSlotIndex = 0;
+
+  if (parsePaletteConfigCommand(line, paletteSlotIndex, paletteRed, paletteGreen, paletteBlue)) {
+    controller.configurePaletteSlot(paletteSlotIndex, paletteRed, paletteGreen, paletteBlue);
+    Serial.printf(
+        "INFO action=palette-config slot=%d hex=#%02X%02X%02X\n",
+        paletteSlotIndex,
+        paletteRed,
+        paletteGreen,
+        paletteBlue);
+    return true;
+  }
+
   if (line.startsWith("C ")) {
     int index = 0;
 
@@ -276,7 +405,7 @@ bool executeCommand(const String &line, SwitchController &controller, String &er
     }
 
     controller.selectColor(index);
-    Serial.printf("INFO action=color index=%d\n", index);
+    Serial.printf("INFO action=color slot=%d\n", index);
     return true;
   }
 
