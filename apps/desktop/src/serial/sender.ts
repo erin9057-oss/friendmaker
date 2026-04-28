@@ -52,13 +52,33 @@ function sanitizeDeviceLine(rawLine: string | Buffer): string | null {
 
 function waitForAck(
   parser: ReadlineParser,
+  port: SerialPort,
   timeoutMs: number,
-  onDeviceLine?: (line: string) => void,
+  options?: {
+    onDeviceLine?: (line: string) => void;
+    onInterruptReady?: (interrupt: (() => void) | null) => void;
+  },
 ): Promise<"OK"> {
   return new Promise((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
+    if (!port.isOpen) {
+      reject(new Error("Execution stopped."));
+      return;
+    }
+
+    let settled = false;
+
+    const finish = (callback: () => void) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
       cleanup();
-      reject(new Error(`Timed out waiting for ACK after ${timeoutMs}ms.`));
+      callback();
+    };
+
+    const timeoutId = setTimeout(() => {
+      finish(() => reject(new Error(`Timed out waiting for ACK after ${timeoutMs}ms.`)));
     }, timeoutMs);
 
     const onData = (rawLine: string | Buffer) => {
@@ -69,26 +89,42 @@ function waitForAck(
       }
 
       if (line === "OK") {
-        cleanup();
-        resolve("OK");
+        finish(() => resolve("OK"));
         return;
       }
 
       if (line.startsWith("ERR")) {
-        cleanup();
-        reject(new Error(`Device returned ${line}`));
+        finish(() => reject(new Error(`Device returned ${line}`)));
         return;
       }
 
-      onDeviceLine?.(line);
+      options?.onDeviceLine?.(line);
+    };
+
+    const onClose = () => {
+      finish(() => reject(new Error("Execution stopped.")));
+    };
+
+    const onError = (error: Error) => {
+      finish(() => reject(error));
+    };
+
+    const onInterrupt = () => {
+      finish(() => reject(new Error("Execution stopped.")));
     };
 
     const cleanup = () => {
       clearTimeout(timeoutId);
       parser.off("data", onData);
+      port.off("close", onClose);
+      port.off("error", onError);
+      options?.onInterruptReady?.(null);
     };
 
+    options?.onInterruptReady?.(onInterrupt);
     parser.on("data", onData);
+    port.on("close", onClose);
+    port.on("error", onError);
   });
 }
 
@@ -166,6 +202,8 @@ function writeLine(port: SerialPort, line: string): Promise<void> {
 export class SerialAckSender implements SenderControls {
   private paused = false;
   private stopped = false;
+  private activePort: SerialPort | null = null;
+  private interruptAckWait: (() => void) | null = null;
 
   pause(): void {
     this.paused = true;
@@ -177,6 +215,16 @@ export class SerialAckSender implements SenderControls {
 
   stop(): void {
     this.stopped = true;
+    this.interruptAckWait?.();
+    this.interruptAckWait = null;
+
+    if (this.activePort?.isOpen) {
+      this.activePort.close(() => {
+        // Intentionally ignored: closing the port here is only used to break
+        // a blocking ACK wait so the execution can transition out of
+        // `stopping` immediately.
+      });
+    }
   }
 
   private async waitWhilePaused(): Promise<void> {
@@ -196,12 +244,16 @@ export class SerialAckSender implements SenderControls {
       onDeviceLine?: (line: string) => void;
     },
   ): Promise<void> {
+    this.paused = false;
+    this.stopped = false;
+
     const preferredPath = preferSerialPath(options.path);
     const port = new SerialPort({
       path: preferredPath,
       baudRate: options.baudRate,
       autoOpen: true,
     });
+    this.activePort = port;
 
     const parser = port.pipe(new ReadlineParser({ delimiter: "\n" }));
 
@@ -223,11 +275,21 @@ export class SerialAckSender implements SenderControls {
             await writeLine(port, command);
             await waitForAck(
               parser,
+              port,
               getAckTimeoutForCommand(command, options.ackTimeoutMs),
-              options.onDeviceLine,
+              {
+                ...(options.onDeviceLine ? { onDeviceLine: options.onDeviceLine } : {}),
+                onInterruptReady: (interrupt) => {
+                  this.interruptAckWait = interrupt;
+                },
+              },
             );
             sent = true;
           } catch (error) {
+            if (this.stopped) {
+              throw new Error("Execution stopped.");
+            }
+
             if (attempt >= options.retries) {
               throw error;
             }
@@ -247,10 +309,13 @@ export class SerialAckSender implements SenderControls {
         });
       }
 
-      if (this.stopped) {
+      if (this.stopped && port.isOpen) {
         await writeLine(port, "E");
       }
     } finally {
+      this.interruptAckWait = null;
+      this.activePort = null;
+
       if (port.isOpen) {
         await new Promise<void>((resolve, reject) => {
           port.close((error) => {

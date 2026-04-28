@@ -1,11 +1,11 @@
 # 朋友制作器 / Friend Maker
 
-> A macOS + ESP32 toolkit for automatically drawing pixel art in **Nintendo Switch** games, currently tailored for **《朋友收集：梦想生活》**.
+> A macOS + ESP32 toolkit for automatically drawing pixel art in **Nintendo Switch** games, currently tailored for **《朋友收集：梦想生活》 / Tomodachi Life**.
 
 朋友制作器是一个面向 `macOS + ESP32-WROOM-32 / ESP-32S` 的自动绘制工具。  
 它会把图片转换成像素网格和手柄动作脚本，再通过 ESP32 模拟 Switch Pro Controller 输入，在游戏画板中自动完成绘制。
 
-**Keywords:** Nintendo Switch auto draw, ESP32 Pro Controller emulator, pixel art drawing automation, macOS drawing studio, Bluetooth Classic HID.
+**Keywords:** Friend Maker, 朋友制作器, Tomodachi Life, 朋友收集：梦想生活, Nintendo Switch auto draw, ESP32 Pro Controller emulator, pixel art drawing automation, macOS drawing studio, Bluetooth Classic HID.
 
 ![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-macOS-black.svg)

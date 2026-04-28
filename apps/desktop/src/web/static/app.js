@@ -108,6 +108,7 @@ const els = {
   pauseExecutionButton: document.getElementById("pause-execution-button"),
   resumeExecutionButton: document.getElementById("resume-execution-button"),
   stopExecutionButton: document.getElementById("stop-execution-button"),
+  resetExecutionButton: document.getElementById("reset-execution-button"),
   studioExecutionStatus: document.getElementById("studio-execution-status"),
   autoRemoveBackgroundCheckbox: document.getElementById("auto-remove-background-checkbox"),
   previewImage: document.getElementById("preview-image"),
@@ -296,6 +297,10 @@ els.resumeExecutionButton.addEventListener("click", async () => {
 
 els.stopExecutionButton.addEventListener("click", async () => {
   await sendStudioExecutionControl("stop", "中断绘制");
+});
+
+els.resetExecutionButton.addEventListener("click", async () => {
+  await sendStudioExecutionControl("reset", "强制恢复绘制状态");
 });
 
 async function generateStudioCommands({ logPrefix }) {
@@ -980,6 +985,7 @@ function syncStudioUi() {
   const executionActive = isStudioExecutionActive();
   const executionPaused = state.studio.execution.status === "paused";
   const executionRunning = state.studio.execution.status === "running";
+  const executionStopping = state.studio.execution.status === "stopping";
 
   els.sizeSelect.value = String(state.studio.canvasSize);
   els.brushSizeSelect.value = String(state.studio.brushSize);
@@ -1022,6 +1028,7 @@ function syncStudioUi() {
   els.pauseExecutionButton.disabled = !executionRunning;
   els.resumeExecutionButton.disabled = !executionPaused;
   els.stopExecutionButton.disabled = !(executionRunning || executionPaused);
+  els.resetExecutionButton.disabled = !executionStopping;
   renderStudioExecutionStatus();
   renderOfficialPalettePreview();
 

@@ -87,6 +87,10 @@ function createEmptyExecution(): ManagedExecution {
 
 let managedExecution: ManagedExecution = createEmptyExecution();
 
+function resetManagedExecutionState(): void {
+  managedExecution = createEmptyExecution();
+}
+
 function json(
   response: ServerResponse,
   statusCode: number,
@@ -501,10 +505,17 @@ async function runManagedExecution(
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    execution.status = "failed";
-    execution.error = message;
     execution.currentCommand = null;
-    appendManagedExecutionLine(execution, `ERR ${message}`);
+
+    if (execution.status === "stopping") {
+      execution.status = "stopped";
+      execution.error = null;
+      appendManagedExecutionLine(execution, "INFO stopped");
+    } else {
+      execution.status = "failed";
+      execution.error = message;
+      appendManagedExecutionLine(execution, `ERR ${message}`);
+    }
   } finally {
     execution.finishedAt = Date.now();
     execution.sender = null;
@@ -770,6 +781,23 @@ async function handleExecutionStop(response: ServerResponse): Promise<void> {
   }
 }
 
+async function handleExecutionReset(response: ServerResponse): Promise<void> {
+  try {
+    if (managedExecution.sender) {
+      managedExecution.sender.stop();
+    }
+
+    resetManagedExecutionState();
+    json(response, 200, {
+      success: true,
+      execution: snapshotManagedExecution(),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    json(response, 400, { error: message });
+  }
+}
+
 async function handleSimulate(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const body = (await readJsonBody(request)) as {
     commands?: string[];
@@ -868,6 +896,11 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "POST" && url.pathname === "/api/execution/stop") {
       await handleExecutionStop(response);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/execution/reset") {
+      await handleExecutionReset(response);
       return;
     }
 

@@ -3,7 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>朋友制作器 | 专为 Switch 版《朋友收集：梦想生活》制作</title>
+    <meta
+      name="description"
+      content="朋友制作器（Friend Maker）是一个面向 Nintendo Switch《朋友收集：梦想生活》/ Tomodachi Life 的自动绘制工具，支持脚本生成、ESP32 固件刷写与手柄测试。"
+    />
+    <meta
+      name="keywords"
+      content="Friend Maker, 朋友制作器, Tomodachi Life, 朋友收集梦想生活, Nintendo Switch auto draw, ESP32 Pro Controller emulator, pixel art drawing automation"
+    />
+    <title>朋友制作器 | Friend Maker for Tomodachi Life（朋友收集：梦想生活）</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -11,10 +19,10 @@
       <header class="hero">
         <div class="hero-copy">
           <p class="eyebrow">朋友制作器</p>
-          <h1>专为 Switch 版《朋友收集：梦想生活》制作</h1>
+          <h1>专为 Switch 版《朋友收集：梦想生活》 / Tomodachi Life 制作</h1>
           <p class="subcopy">
             现在这版 Web UI 已经覆盖三块核心工作：生成绘图脚本、刷入 ESP32 固件，以及进行手柄动作测试，面向
-            Switch 版《朋友收集：梦想生活》的自动绘制流程持续完善中。
+            Switch 版《朋友收集：梦想生活》（Tomodachi Life）的自动绘制流程持续完善中。
           </p>
         </div>
         <div class="hero-badge">
@@ -155,6 +163,7 @@
               <button id="pause-execution-button" class="ghost" type="button" disabled>暂停绘制</button>
               <button id="resume-execution-button" class="ghost" type="button" disabled>继续绘制</button>
               <button id="stop-execution-button" class="ghost" type="button" disabled>中断绘制</button>
+              <button id="reset-execution-button" class="ghost" type="button" disabled>强制恢复状态</button>
             </div>
 
             <p class="hint" id="studio-execution-status">当前未开始绘制。</p>
