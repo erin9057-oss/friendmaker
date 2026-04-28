@@ -167,6 +167,16 @@
               <p>这里显示像素化结果和关键统计信息。</p>
             </div>
 
+            <div class="preview-tools">
+              <label class="checkbox-card" for="auto-remove-background-checkbox">
+                <input id="auto-remove-background-checkbox" type="checkbox" />
+                <span class="checkbox-copy">
+                  <strong>自动扣背景</strong>
+                  <small>适合白底、浅灰底、棋盘格假透明图。真正带透明通道的 PNG 不需要开启。</small>
+                </span>
+              </label>
+            </div>
+
             <div class="preview-frame">
               <img id="preview-image" alt="生成预览" />
               <div class="empty-state" id="preview-empty">生成后这里会显示像素预览。</div>
@@ -223,11 +233,11 @@
               <p>这里会显示模拟器日志，或者串口设备返回的状态信息。</p>
             </div>
 
-            <pre id="log-output" class="log-output" data-empty-log="等待生成命令...">等待生成命令...</pre>
-
-            <div class="action-row slim">
+            <div class="action-row slim log-toolbar">
               <button id="studio-clear-log-button" class="ghost" type="button">清空日志</button>
             </div>
+
+            <pre id="log-output" class="log-output" data-empty-log="等待生成命令...">等待生成命令...</pre>
           </section>
         </main>
       </section>
@@ -303,11 +313,11 @@
               <p>这里会返回 PlatformIO 的完整输出，方便排查烧录问题。</p>
             </div>
 
-            <pre id="firmware-log-output" class="log-output" data-empty-log="等待刷入固件...">等待刷入固件...</pre>
-
-            <div class="action-row slim">
+            <div class="action-row slim log-toolbar">
               <button id="firmware-clear-log-button" class="ghost" type="button">清空日志</button>
             </div>
+
+            <pre id="firmware-log-output" class="log-output" data-empty-log="等待刷入固件...">等待刷入固件...</pre>
           </section>
         </main>
       </section>
@@ -470,11 +480,11 @@
               <p>这里会显示每次按钮测试或自定义命令的返回内容。</p>
             </div>
 
-            <pre id="controller-log-output" class="log-output" data-empty-log="等待开始测试...">等待开始测试...</pre>
-
-            <div class="action-row slim">
+            <div class="action-row slim log-toolbar">
               <button id="controller-clear-log-button" class="ghost" type="button">清空日志</button>
             </div>
+
+            <pre id="controller-log-output" class="log-output" data-empty-log="等待开始测试...">等待开始测试...</pre>
           </section>
         </main>
       </section>

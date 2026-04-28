@@ -297,6 +297,7 @@ async function handleGenerate(request: IncomingMessage, response: ServerResponse
     resizeMode?: "contain" | "cover";
     palette?: string[];
     previewScale?: number;
+    removeBackground?: boolean;
   };
 
   if (!body.imageDataUrl) {
@@ -328,6 +329,9 @@ async function handleGenerate(request: IncomingMessage, response: ServerResponse
     decodeDataUrl(body.imageDataUrl),
     profile,
     body.previewScale ?? 12,
+    {
+      removeBackground: body.removeBackground === true,
+    },
   );
 
   json(response, 200, {
@@ -338,6 +342,7 @@ async function handleGenerate(request: IncomingMessage, response: ServerResponse
       brushSize: profile.brushSize,
       colorMode: profile.colorMode,
       colorCount: profile.colorCount,
+      removeBackground: body.removeBackground === true,
       palette: plan.paletteHexes,
       baudRate: profile.baudRate,
       ackTimeoutMs: profile.ackTimeoutMs,

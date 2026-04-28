@@ -271,6 +271,42 @@ textarea {
   margin-top: 18px;
 }
 
+.preview-tools {
+  margin-top: 18px;
+}
+
+.checkbox-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 14px 16px;
+  border: 1px solid rgba(19, 34, 56, 0.1);
+  border-radius: 18px;
+  background: rgba(19, 34, 56, 0.04);
+}
+
+.checkbox-card input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+}
+
+.checkbox-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.checkbox-copy strong {
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.checkbox-copy small {
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+
 .action-row {
   display: flex;
   gap: 12px;
@@ -765,7 +801,7 @@ button.ghost {
   white-space: pre-wrap;
 }
 
-.log-output + .action-row.slim {
+.log-toolbar {
   justify-content: flex-end;
 }
 

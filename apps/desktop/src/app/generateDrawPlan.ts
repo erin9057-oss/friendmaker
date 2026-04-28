@@ -19,8 +19,11 @@ export async function generateDrawPlan(
   imageSource: ImageSource,
   profile: DrawingProfile,
   previewScale = 12,
+  options?: {
+    removeBackground?: boolean;
+  },
 ): Promise<DrawPlan> {
-  const { pixelMap, usedColorIndexes } = await pixelizeImage(imageSource, profile);
+  const { pixelMap, usedColorIndexes } = await pixelizeImage(imageSource, profile, options);
   const previewPng = await renderPreviewToBuffer(pixelMap, profile, previewScale);
   const commands = generateScanlineCommands(pixelMap, profile);
   const paletteHexes = Array.from(

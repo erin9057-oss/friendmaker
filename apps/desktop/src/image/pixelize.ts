@@ -1,20 +1,25 @@
 import type { DrawingProfile, PixelizationResult } from "../types.js";
 import type { ImageSource } from "./loadImage.js";
+import { autoRemoveBackground } from "./removeBackground.js";
 import { resizeImage } from "./resizeImage.js";
 import { quantizePixels } from "./quantize.js";
 
 export async function pixelizeImage(
   imageSource: ImageSource,
   profile: DrawingProfile,
+  options?: {
+    removeBackground?: boolean;
+  },
 ): Promise<PixelizationResult> {
   const logicalWidth = Math.max(1, Math.ceil(profile.canvasWidth / profile.brushSize));
   const logicalHeight = Math.max(1, Math.ceil(profile.canvasHeight / profile.brushSize));
 
-  const rawImage = await resizeImage(imageSource, {
+  const resizedImage = await resizeImage(imageSource, {
     width: logicalWidth,
     height: logicalHeight,
     resizeMode: profile.resizeMode,
   });
+  const rawImage = options?.removeBackground ? autoRemoveBackground(resizedImage) : resizedImage;
 
   const pixelMap = quantizePixels(rawImage, {
     colorMode: profile.colorMode,

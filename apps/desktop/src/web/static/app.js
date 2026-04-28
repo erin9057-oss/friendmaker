@@ -17,6 +17,7 @@ const state = {
     brushSize: 3,
     colorMode: "mono",
     colorCount: 32,
+    removeBackground: false,
     usedColorIndexes: [],
     officialPalette: {
       rows: 0,
@@ -108,6 +109,7 @@ const els = {
   resumeExecutionButton: document.getElementById("resume-execution-button"),
   stopExecutionButton: document.getElementById("stop-execution-button"),
   studioExecutionStatus: document.getElementById("studio-execution-status"),
+  autoRemoveBackgroundCheckbox: document.getElementById("auto-remove-background-checkbox"),
   previewImage: document.getElementById("preview-image"),
   previewEmpty: document.getElementById("preview-empty"),
   officialPalettePanel: document.getElementById("official-palette-panel"),
@@ -199,6 +201,11 @@ els.colorModeSelect.addEventListener("change", () => {
 
 els.colorCountSelect.addEventListener("change", () => {
   state.studio.colorCount = Number(els.colorCountSelect.value || state.studio.colorCount);
+  syncStudioUi();
+});
+
+els.autoRemoveBackgroundCheckbox.addEventListener("change", () => {
+  state.studio.removeBackground = els.autoRemoveBackgroundCheckbox.checked;
   syncStudioUi();
 });
 
@@ -315,6 +322,7 @@ async function generateStudioCommands({ logPrefix }) {
         resizeMode: "cover",
         threshold: Number(els.thresholdRange.value),
         previewScale: 12,
+        removeBackground: state.studio.removeBackground,
       }),
     });
 
@@ -339,6 +347,7 @@ async function generateStudioCommands({ logPrefix }) {
         ? payload.profile.colorMode
         : "mono";
     state.studio.colorCount = payload.profile.colorCount ?? state.studio.colorCount;
+    state.studio.removeBackground = payload.profile.removeBackground === true;
 
     els.commandsOutput.value = payload.commands.join("\n");
     els.previewImage.src = payload.previewDataUrl;
@@ -981,18 +990,23 @@ function syncStudioUi() {
   els.sizeSelect.value = String(state.studio.canvasSize);
   els.brushSizeSelect.value = String(state.studio.brushSize);
   els.colorModeSelect.value = state.studio.colorMode;
+  els.autoRemoveBackgroundCheckbox.checked = state.studio.removeBackground;
   syncStudioColorCountOptions();
+  const backgroundHint = state.studio.removeBackground
+    ? "已开启自动扣背景，会优先去掉白底、浅灰底和棋盘格假透明背景。"
+    : "当前不会自动扣背景；如果素材是白底或棋盘格假透明图，建议开启。";
   els.studioModeHint.textContent =
     state.studio.colorMode === "mono"
-      ? `深色像素会绘制，浅色像素会保留为空白背景。当前会把图片映射到 250x250 画布，并按 ${state.studio.brushSize} 号笔和画布中心起步生成。`
+      ? `深色像素会绘制，浅色像素会保留为空白背景。当前会把图片映射到 250x250 画布，并按 ${state.studio.brushSize} 号笔和画布中心起步生成。${backgroundHint}`
       : state.studio.colorMode === "official"
-        ? `当前会先把图片压到 ${state.studio.colorCount} 个官方色以内，再映射到游戏内置的 7x12 官方色盘，并按 ${state.studio.brushSize} 号笔生成。开始前请先把 9 个槽位手动设为白色。`
-        : `当前会先把图片自动量化成 ${state.studio.colorCount} 色，再按 250x250 画布和 ${state.studio.brushSize} 号笔生成绘制脚本。`;
+        ? `当前会先把图片压到 ${state.studio.colorCount} 个官方色以内，再映射到游戏内置的 7x12 官方色盘，并按 ${state.studio.brushSize} 号笔生成。开始前请先把 9 个槽位手动设为白色。${backgroundHint}`
+        : `当前会先把图片自动量化成 ${state.studio.colorCount} 色，再按 250x250 画布和 ${state.studio.brushSize} 号笔生成绘制脚本。${backgroundHint}`;
   els.studioPortSelect.disabled = state.studio.busy || executionActive;
   els.refreshPortsButton.disabled = state.studio.busy || executionActive;
   els.sizeSelect.disabled = state.studio.busy || executionActive;
   els.brushSizeSelect.disabled = state.studio.busy || executionActive;
   els.colorModeSelect.disabled = state.studio.busy || executionActive;
+  els.autoRemoveBackgroundCheckbox.disabled = state.studio.busy || executionActive;
   els.colorCountSelect.disabled =
     state.studio.busy || executionActive || state.studio.colorMode === "mono";
   els.thresholdLabel.textContent =
