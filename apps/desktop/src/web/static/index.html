@@ -3,18 +3,18 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Switch Auto Draw Studio</title>
+    <title>朋友制作器 | 专为 Switch 版《朋友收集：梦想生活》制作</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <div class="shell">
       <header class="hero">
         <div class="hero-copy">
-          <p class="eyebrow">Switch Auto Draw</p>
-          <h1>把图片、固件和手柄测试收进一个工作台</h1>
+          <p class="eyebrow">朋友制作器</p>
+          <h1>专为 Switch 版《朋友收集：梦想生活》制作</h1>
           <p class="subcopy">
-            现在这版 Web UI 已经覆盖三块核心工作：生成绘图脚本、刷入 ESP32 固件、以及做单步手柄动作测试。真实的
-            Switch Pro 控制器模拟仍在固件层持续推进。
+            现在这版 Web UI 已经覆盖三块核心工作：生成绘图脚本、刷入 ESP32 固件，以及进行手柄动作测试，面向
+            Switch 版《朋友收集：梦想生活》的自动绘制流程持续完善中。
           </p>
         </div>
         <div class="hero-badge">
@@ -28,6 +28,14 @@
         <button class="page-tab" data-page-target="firmware">刷入固件</button>
         <button class="page-tab" data-page-target="controller">手柄测试</button>
       </nav>
+
+      <section class="author-notice" aria-label="作者说明">
+        <strong>作者说明</strong>
+        <p>
+          来源作者：小红书作者 <b>惜羽拓麻镇</b>。本项目内容禁止商用；转发、转载或二次分享时，需注明作者名称
+          <b>惜羽拓麻镇</b>，并附上原始发布地址。
+        </p>
+      </section>
 
       <section class="page page-active" data-page="studio">
         <main class="grid">
@@ -57,7 +65,7 @@
             <div class="execution-box mono-note-box">
               <div class="panel-head compact">
                 <h2>绘制模式</h2>
-                <p>当前固定走 128x128 + 1 号笔 + 画布中心起步。单色模式画黑白图，多色模式会先自适应量化，官方色模式会量化到游戏内置的 7x12 色盘。</p>
+                <p>当前固定走 250x250 画布并从画布中心起步。单色模式画黑白图，多色模式会先自适应量化，官方色模式会量化到游戏内置的 7x12 色盘；画笔大小按下方选择生成。</p>
               </div>
 
               <p class="hint" id="studio-mode-hint">
@@ -69,15 +77,15 @@
               <label>
                 <span>画布尺寸（固定）</span>
                 <select id="size-select">
-                  <option value="128" selected>128x128</option>
+                  <option value="250" selected>250x250</option>
                 </select>
               </label>
 
               <label>
                 <span>画笔大小</span>
                 <select id="brush-size-select">
-                  <option value="1" selected>1</option>
-                  <option value="3">3</option>
+                  <option value="1">1</option>
+                  <option value="3" selected>3</option>
                   <option value="7">7</option>
                   <option value="13">13</option>
                   <option value="19">19</option>

@@ -1,6 +1,16 @@
-# Switch Auto Draw
+# 朋友制作器
+
+专为 Switch 版《朋友收集：梦想生活》制作。
 
 一个基于 Mac + ESP32 的 Nintendo Switch 自动画图 MVP。
+
+## 作者说明
+
+- 来源作者：小红书作者 `惜羽拓麻镇`
+- 当前仓库内容禁止商用
+- 转发、转载或二次分享时，需注明作者名称 `惜羽拓麻镇`
+- 转发、转载或二次分享时，需同时附上原始发布地址
+- 如需公开传播，请先自行补全并核对原始发布地址后再发布
 
 当前这版仓库先把最关键的一条链路落地了：
 
@@ -15,6 +25,7 @@
 - macOS 上的 TypeScript CLI
 - PNG / JPG / SVG 图片输入
 - 黑白模式与固定调色板模式
+- `1 / 3 / 7 / 13 / 19 / 27` 六种画笔大小
 - 生成 PNG 预览
 - 生成串口文本命令
 - 通过串口逐条发送并等待 `OK`
@@ -148,6 +159,7 @@ pio device monitor -b 115200
 --simulate-ack-delay 15
 --simulate-error-at 3
 --size 32
+--brush-size 3
 --mode mono
 --mode palette --colors 4
 --palette "#000000,#ffffff,#ff0000,#0000ff"
@@ -159,7 +171,7 @@ pio device monitor -b 115200
 
 参考：
 
-- `profiles/switch-mono-128.json`
+- `profiles/switch-mono-250.json`
 - `profiles/switch-palette-32.json`
 
 你可以按目标游戏调这些关键参数：

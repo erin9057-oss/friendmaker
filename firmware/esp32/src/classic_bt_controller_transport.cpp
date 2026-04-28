@@ -59,6 +59,10 @@ esp_hidd_qos_param_t kHidQos = {};
 
 const char *boolName(bool value) { return value ? "true" : "false"; }
 
+bool isIgnorableBluetoothError(esp_err_t err) {
+  return err == ESP_OK || err == ESP_ERR_INVALID_STATE;
+}
+
 String formatBluetoothAddress(const uint8_t address[6]) {
   char buffer[18];
   std::snprintf(
@@ -351,6 +355,78 @@ bool ClassicBtControllerTransport::initializeClassicBluetooth() {
   return true;
 }
 
+void ClassicBtControllerTransport::clearConnectionState() {
+  discoverable_ = false;
+  connected_ = false;
+  readyForReports_ = false;
+  authComplete_ = false;
+  pairingComplete_ = false;
+  paired_ = false;
+  hidReady_ = false;
+  appRegistered_ = false;
+  gapReady_ = false;
+  bluedroidReady_ = false;
+  stackStarted_ = false;
+  timer_ = 0;
+  initStep_ = "idle";
+  initError_ = "none";
+}
+
+bool ClassicBtControllerTransport::shutdownClassicBluetooth() {
+  initStep_ = "shutdown";
+  initError_ = "none";
+  readyForReports_ = false;
+
+  const esp_err_t scanErr =
+      esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
+  if (!isIgnorableBluetoothError(scanErr)) {
+    Serial.printf("WARN bt shutdown scan_mode err=%s\n", esp_err_to_name(scanErr));
+  }
+
+  const esp_err_t unplugErr = esp_bt_hid_device_virtual_cable_unplug();
+  if (!isIgnorableBluetoothError(unplugErr)) {
+    Serial.printf("WARN bt shutdown vc_unplug err=%s\n", esp_err_to_name(unplugErr));
+  }
+  delay(200);
+
+  const esp_err_t disconnectErr = esp_bt_hid_device_disconnect();
+  if (!isIgnorableBluetoothError(disconnectErr)) {
+    Serial.printf("WARN bt shutdown disconnect err=%s\n", esp_err_to_name(disconnectErr));
+  }
+  delay(200);
+
+  const esp_err_t unregisterErr = esp_bt_hid_device_unregister_app();
+  if (!isIgnorableBluetoothError(unregisterErr)) {
+    Serial.printf("WARN bt shutdown unregister_app err=%s\n", esp_err_to_name(unregisterErr));
+  }
+  delay(150);
+
+  const esp_err_t hidDeinitErr = esp_bt_hid_device_deinit();
+  if (!isIgnorableBluetoothError(hidDeinitErr)) {
+    Serial.printf("WARN bt shutdown hid_deinit err=%s\n", esp_err_to_name(hidDeinitErr));
+  }
+  delay(150);
+
+  const esp_err_t bluedroidDisableErr = esp_bluedroid_disable();
+  if (!isIgnorableBluetoothError(bluedroidDisableErr)) {
+    Serial.printf("WARN bt shutdown bluedroid_disable err=%s\n", esp_err_to_name(bluedroidDisableErr));
+  }
+
+  const esp_err_t bluedroidDeinitErr = esp_bluedroid_deinit();
+  if (!isIgnorableBluetoothError(bluedroidDeinitErr)) {
+    Serial.printf("WARN bt shutdown bluedroid_deinit err=%s\n", esp_err_to_name(bluedroidDeinitErr));
+  }
+
+  if (btStarted() && !btStop()) {
+    Serial.println("WARN bt shutdown btStop failed");
+  }
+
+  clearConnectionState();
+  clearInputs();
+  delay(250);
+  return true;
+}
+
 void ClassicBtControllerTransport::clearInputs() {
   buttonsRight_ = 0;
   buttonsShared_ = 0;
@@ -502,20 +578,18 @@ void ClassicBtControllerTransport::moveDirection(
 }
 
 bool ClassicBtControllerTransport::resetConnection() {
-  const esp_err_t err = esp_bt_hid_device_virtual_cable_unplug();
-  if (err != ESP_OK) {
-    Serial.printf("WARN bt reset failed err=%s\n", esp_err_to_name(err));
+  Serial.println("INFO bt reset requested mode=stack-restart");
+
+  shutdownClassicBluetooth();
+
+  clearInputs();
+
+  if (!initializeClassicBluetooth()) {
+    Serial.printf("WARN bt reset restart failed step=%s err=%s\n", initStep_, initError_);
     return false;
   }
 
-  connected_ = false;
-  authComplete_ = false;
-  pairingComplete_ = false;
-  paired_ = false;
-  readyForReports_ = false;
-  discoverable_ = true;
-  esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
-  Serial.println("INFO bt reset requested mode=virtual-cable-unplug");
+  Serial.println("INFO bt reset completed mode=stack-restart");
   return true;
 }
 

@@ -7,9 +7,12 @@ export async function pixelizeImage(
   imageSource: ImageSource,
   profile: DrawingProfile,
 ): Promise<PixelizationResult> {
+  const logicalWidth = Math.max(1, Math.ceil(profile.canvasWidth / profile.brushSize));
+  const logicalHeight = Math.max(1, Math.ceil(profile.canvasHeight / profile.brushSize));
+
   const rawImage = await resizeImage(imageSource, {
-    width: profile.canvasWidth,
-    height: profile.canvasHeight,
+    width: logicalWidth,
+    height: logicalHeight,
     resizeMode: profile.resizeMode,
   });
 
@@ -21,7 +24,11 @@ export async function pixelizeImage(
   });
 
   const usedColorIndexes = Array.from(
-    new Set(pixelMap.flatMap((row) => row.map((pixel) => pixel.colorIndex))),
+    new Set(
+      pixelMap.flatMap((row) =>
+        row.filter((pixel) => pixel.alpha > 0).map((pixel) => pixel.colorIndex),
+      ),
+    ),
   ).sort((a, b) => a - b);
 
   return {

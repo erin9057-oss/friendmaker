@@ -18,6 +18,7 @@ export interface CliOptions {
   size?: number;
   width?: number;
   height?: number;
+  brushSize?: 1 | 3 | 7 | 13 | 19 | 27;
   colors?: number;
   threshold?: number;
   baud?: number;
@@ -87,6 +88,16 @@ export function parseCliArgs(rawArgs: string[]): CliOptions {
         break;
       case "--height":
         options.height = Number.parseInt(readValue(rawArgs, index, arg), 10);
+        index += 1;
+        break;
+      case "--brush-size":
+        {
+          const value = Number.parseInt(readValue(rawArgs, index, arg), 10);
+          if (value !== 1 && value !== 3 && value !== 7 && value !== 13 && value !== 19 && value !== 27) {
+            throw new Error("--brush-size must be one of 1, 3, 7, 13, 19, 27");
+          }
+          options.brushSize = value;
+        }
         index += 1;
         break;
       case "--colors":
@@ -172,6 +183,7 @@ export function applyCliOptions(profile: DrawingProfile, options: CliOptions): D
       baudRate: options.baud ?? profile.baudRate,
       canvasWidth: width,
       canvasHeight: height,
+      brushSize: options.brushSize ?? profile.brushSize,
       resizeMode: options.resizeMode ?? profile.resizeMode,
       colorMode,
       colorCount,
@@ -192,6 +204,7 @@ export function applyCliOptions(profile: DrawingProfile, options: CliOptions): D
     baudRate: options.baud ?? profile.baudRate,
     canvasWidth: width,
     canvasHeight: height,
+    brushSize: options.brushSize ?? profile.brushSize,
     resizeMode: options.resizeMode ?? profile.resizeMode,
     colorMode,
     colorCount: requestedColors,
@@ -228,6 +241,7 @@ export function printHelp(): string {
     "  --size <n>               Square canvas size override",
     "  --width <n>              Canvas width override",
     "  --height <n>             Canvas height override",
+    "  --brush-size <n>         Brush size override (1, 3, 7, 13, 19, 27)",
     "  --mode mono|palette|official Quantization mode",
     "  --colors <n>             Palette size when using palette mode",
     "  --threshold <n>          Mono threshold (0-255)",

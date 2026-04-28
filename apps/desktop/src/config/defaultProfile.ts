@@ -87,10 +87,10 @@ export const DEFAULT_PALETTE = buildReferencePalette();
 export const DEFAULT_OFFICIAL_PALETTE = OFFICIAL_PALETTE;
 
 export const DEFAULT_PROFILE: DrawingProfile = {
-  profileName: "switch-mono-128",
+  profileName: "switch-mono-250",
   baudRate: 115200,
-  canvasWidth: 128,
-  canvasHeight: 128,
+  canvasWidth: 250,
+  canvasHeight: 250,
   resizeMode: "cover",
   cellMoveDuration: 80,
   inputDelay: 40,
@@ -104,7 +104,7 @@ export const DEFAULT_PROFILE: DrawingProfile = {
   colorCount: 32,
   monoThreshold: 128,
   palette: DEFAULT_PALETTE.slice(0, 2),
-  brushSize: 1,
+  brushSize: 3,
   startCursor: "center",
   startTool: "pen",
   startColorIndex: 0,

@@ -17,6 +17,8 @@ class ClassicBtControllerTransport : public ControllerTransport {
  private:
   bool initializeClassicBluetooth();
   bool initializeNvsAndBaseAddress();
+  bool shutdownClassicBluetooth();
+  void clearConnectionState();
   void clearInputs();
   void setButtonBits(uint32_t buttonsMask);
   void setLeftStickFromVector(int x, int y);

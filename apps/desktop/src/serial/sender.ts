@@ -100,7 +100,7 @@ function getAckTimeoutForCommand(command: string, baseTimeoutMs: number): number
   }
 
   if (trimmed === "BT RESET") {
-    return Math.max(baseTimeoutMs, 8_000);
+    return Math.max(baseTimeoutMs, 20_000);
   }
 
   if (trimmed.startsWith("M ")) {

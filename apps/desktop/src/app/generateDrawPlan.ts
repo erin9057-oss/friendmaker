@@ -21,11 +21,15 @@ export async function generateDrawPlan(
   previewScale = 12,
 ): Promise<DrawPlan> {
   const { pixelMap, usedColorIndexes } = await pixelizeImage(imageSource, profile);
-  const previewPng = await renderPreviewToBuffer(pixelMap, previewScale);
+  const previewPng = await renderPreviewToBuffer(pixelMap, profile, previewScale);
   const commands = generateScanlineCommands(pixelMap, profile);
   const paletteHexes = Array.from(
     pixelMap
-      .flatMap((row) => row.map((pixel) => [pixel.colorIndex, pixel.colorHex] as const))
+      .flatMap((row) =>
+        row
+          .filter((pixel) => pixel.alpha > 0 && pixel.colorIndex >= 0)
+          .map((pixel) => [pixel.colorIndex, pixel.colorHex] as const),
+      )
       .reduce((map, [colorIndex, colorHex]) => map.set(colorIndex, colorHex), new Map<number, string>())
       .entries(),
   )

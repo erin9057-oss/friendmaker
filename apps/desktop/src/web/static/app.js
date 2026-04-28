@@ -13,8 +13,8 @@ const state = {
   studio: {
     busy: false,
     target: "serial",
-    canvasSize: 128,
-    brushSize: 1,
+    canvasSize: 250,
+    brushSize: 3,
     colorMode: "mono",
     colorCount: 32,
     usedColorIndexes: [],
@@ -296,14 +296,6 @@ els.stopExecutionButton.addEventListener("click", async () => {
 async function generateStudioCommands({ logPrefix }) {
   if (!state.imageDataUrl) {
     appendLog(els.studioLogOutput, "请先选择图片。");
-    return false;
-  }
-
-  if (state.studio.brushSize !== 1) {
-    appendLog(
-      els.studioLogOutput,
-      "当前脚本生成先只支持 1 号笔。请先切回 1 号笔，再按 128x128 画布从中心开始生成。",
-    );
     return false;
   }
 
@@ -981,7 +973,6 @@ function syncStudioColorCountOptions() {
 function syncStudioUi() {
   const hasPort = Boolean(state.selectedPortPath);
   const controllerReady = isControllerReadyForStudio();
-  const monoBrushReady = state.studio.brushSize === 1;
   const hasImage = Boolean(state.imageDataUrl);
   const executionActive = isStudioExecutionActive();
   const executionPaused = state.studio.execution.status === "paused";
@@ -991,13 +982,12 @@ function syncStudioUi() {
   els.brushSizeSelect.value = String(state.studio.brushSize);
   els.colorModeSelect.value = state.studio.colorMode;
   syncStudioColorCountOptions();
-  els.studioModeHint.textContent = monoBrushReady
-    ? state.studio.colorMode === "mono"
-      ? "深色像素会绘制，浅色像素会保留为空白背景。当前会把图片完整铺到 128x128 画布，再按 1 号笔和画布中心起步生成。"
+  els.studioModeHint.textContent =
+    state.studio.colorMode === "mono"
+      ? `深色像素会绘制，浅色像素会保留为空白背景。当前会把图片映射到 250x250 画布，并按 ${state.studio.brushSize} 号笔和画布中心起步生成。`
       : state.studio.colorMode === "official"
-        ? `当前会先把图片压到 ${state.studio.colorCount} 个官方色以内，再映射到游戏内置的 7x12 官方色盘。开始前请先把 9 个槽位手动设为白色。`
-        : `当前会先把图片自动量化成 ${state.studio.colorCount} 色，再按 128x128 画布和 1 号笔生成绘制脚本。`
-    : `当前已选 ${state.studio.brushSize} 号画笔，但脚本生成这一步先只支持 1 号笔。建议先切回 1 号笔，把中心起步这条链路跑通。`;
+        ? `当前会先把图片压到 ${state.studio.colorCount} 个官方色以内，再映射到游戏内置的 7x12 官方色盘，并按 ${state.studio.brushSize} 号笔生成。开始前请先把 9 个槽位手动设为白色。`
+        : `当前会先把图片自动量化成 ${state.studio.colorCount} 色，再按 250x250 画布和 ${state.studio.brushSize} 号笔生成绘制脚本。`;
   els.studioPortSelect.disabled = state.studio.busy || executionActive;
   els.refreshPortsButton.disabled = state.studio.busy || executionActive;
   els.sizeSelect.disabled = state.studio.busy || executionActive;
@@ -1014,14 +1004,12 @@ function syncStudioUi() {
     state.studio.busy ||
     executionActive ||
     !hasImage ||
-    !monoBrushReady ||
     !hasPort ||
     !controllerReady;
   els.executeButton.disabled =
     state.studio.busy ||
     executionActive ||
     state.commands.length === 0 ||
-    !monoBrushReady ||
     !hasPort ||
     !controllerReady;
   els.generateButton.disabled = state.studio.busy || executionActive;
@@ -1037,13 +1025,6 @@ function syncStudioUi() {
   } else {
     els.thresholdRange.disabled = state.studio.busy || executionActive;
     els.thresholdValue.textContent = els.thresholdRange.value;
-  }
-
-  if (!monoBrushReady) {
-    els.executionHint.textContent =
-      "当前脚本生成先只支持 1 号笔。请先切回 1 号笔，再生成并开始绘制。";
-    renderStudioConnectionStatus();
-    return;
   }
 
   if (!hasImage) {
@@ -1073,10 +1054,10 @@ function syncStudioUi() {
 
   els.executionHint.textContent =
     state.studio.colorMode === "mono"
-      ? `当前会把 128x128 的黑白脚本通过串口发送到 ${state.selectedPortPath}，由 ESP32 从画布中心起步，继续翻译成方向键移动与 A 绘制。`
+      ? `当前会把 250x250 的黑白脚本通过串口发送到 ${state.selectedPortPath}，由 ESP32 从画布中心起步，按 ${state.studio.brushSize} 号笔继续翻译成方向键移动与 A 绘制。`
       : state.studio.colorMode === "official"
-        ? `当前会把 128x128 的官方色脚本通过串口发送到 ${state.selectedPortPath}。请先手动把 9 个槽位设为白色，ESP32 会按槽位当前颜色状态去配置内置 7x12 色盘。`
-        : `当前会把 128x128 的多色脚本通过串口发送到 ${state.selectedPortPath}，由 ESP32 从画布中心起步，继续翻译成颜色切换、方向键移动与 A 绘制。`;
+        ? `当前会把 250x250 的官方色脚本通过串口发送到 ${state.selectedPortPath}。请先手动把 9 个槽位设为白色，ESP32 会按槽位当前颜色状态去配置内置 7x12 色盘，并按 ${state.studio.brushSize} 号笔绘制。`
+        : `当前会把 250x250 的多色脚本通过串口发送到 ${state.selectedPortPath}，由 ESP32 从画布中心起步，按 ${state.studio.brushSize} 号笔继续翻译成颜色切换、方向键移动与 A 绘制。`;
   renderStudioConnectionStatus();
 }
 

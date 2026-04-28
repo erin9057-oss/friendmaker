@@ -16,6 +16,7 @@ export interface Pixel {
   y: number;
   colorIndex: number;
   colorHex: string;
+  alpha: number;
 }
 
 export type PixelMap = Pixel[][];

@@ -9,6 +9,12 @@ import {
   rgbToHex,
 } from "../utils/colors.js";
 
+const TRANSPARENCY_ALPHA_THRESHOLD = 16;
+
+function isTransparentAlpha(alpha: number): boolean {
+  return alpha <= TRANSPARENCY_ALPHA_THRESHOLD;
+}
+
 function buildMonoPixelMap(
   image: {
     width: number;
@@ -33,6 +39,18 @@ function buildMonoPixelMap(
       const g = image.data[offset + 1] ?? 0;
       const b = image.data[offset + 2] ?? 0;
       const a = image.channels >= 4 ? (image.data[offset + 3] ?? 255) : 255;
+
+      if (isTransparentAlpha(a)) {
+        row.push({
+          x,
+          y,
+          colorIndex: -1,
+          colorHex: "#ffffff",
+          alpha: 0,
+        });
+        continue;
+      }
+
       const rgb = compositeOnWhite(r, g, b, a);
       const colorIndex = luminance(rgb) < options.monoThreshold ? 0 : Math.min(1, monoPalette.length - 1);
 
@@ -41,6 +59,7 @@ function buildMonoPixelMap(
         y,
         colorIndex,
         colorHex: monoPalette[colorIndex] ?? monoPalette[0] ?? "#000000",
+        alpha: 255,
       });
     }
 
@@ -90,6 +109,20 @@ function buildPalettePixelMap(
     const row: Pixel[] = [];
 
     for (let x = 0; x < image.width; x += 1) {
+      const imageOffset = (y * image.width + x) * image.channels;
+      const sourceAlpha = image.channels >= 4 ? (image.data[imageOffset + 3] ?? 255) : 255;
+
+      if (isTransparentAlpha(sourceAlpha)) {
+        row.push({
+          x,
+          y,
+          colorIndex: -1,
+          colorHex: "#ffffff",
+          alpha: 0,
+        });
+        continue;
+      }
+
       const offset = (y * image.width + x) * 4;
       const colorHex = rgbToHex({
         r: reducedPixels[offset] ?? 0,
@@ -103,6 +136,7 @@ function buildPalettePixelMap(
         y,
         colorIndex,
         colorHex,
+        alpha: 255,
       });
     }
 
@@ -136,6 +170,18 @@ function buildFixedPalettePixelMap(
       const g = image.data[offset + 1] ?? 0;
       const b = image.data[offset + 2] ?? 0;
       const a = image.channels >= 4 ? (image.data[offset + 3] ?? 255) : 255;
+
+      if (isTransparentAlpha(a)) {
+        row.push({
+          x,
+          y,
+          colorIndex: -1,
+          colorHex: "#ffffff",
+          alpha: 0,
+        });
+        continue;
+      }
+
       const rgb = compositeOnWhite(r, g, b, a);
 
       let nearestColor = paletteEntries[0];
@@ -155,6 +201,7 @@ function buildFixedPalettePixelMap(
         y,
         colorIndex: nearestColor?.colorIndex ?? 0,
         colorHex: nearestColor?.colorHex ?? "#000000",
+        alpha: 255,
       });
     }
 
