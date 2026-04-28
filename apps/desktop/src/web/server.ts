@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -151,12 +151,35 @@ function resolvePlatformIoPath(): string | null {
   const candidates = [
     process.env.PLATFORMIO_BIN,
     path.join(os.homedir(), ".platformio", "penv", "bin", "pio"),
+    path.join(os.homedir(), ".platformio", "penv", "Scripts", "pio.exe"),
+    path.join(os.homedir(), ".platformio", "penv", "Scripts", "platformio.exe"),
     path.join(os.homedir(), ".local", "bin", "pio"),
   ].filter((value): value is string => typeof value === "string" && value.length > 0);
 
   for (const candidate of candidates) {
     if (existsSync(candidate)) {
       return candidate;
+    }
+  }
+
+  const lookup = process.platform === "win32" ? "where" : "which";
+  const commands = ["pio", "platformio"];
+
+  for (const command of commands) {
+    const result = spawnSync(lookup, [command], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+
+    if (result.status === 0) {
+      const resolvedPath = result.stdout
+        .split(/\r?\n/u)
+        .map((line) => line.trim())
+        .find((line) => line.length > 0);
+
+      if (resolvedPath) {
+        return resolvedPath;
+      }
     }
   }
 

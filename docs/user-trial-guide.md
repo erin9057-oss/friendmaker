@@ -8,21 +8,27 @@
 
 ## 平台支持
 
-当前试用版仅支持 `macOS`。
+当前试用版支持：
+
+- `macOS`：完整试用流程
+- `Windows`：手动安装与手动启动流程
 
 说明：
 
-- 当前文档中的串口名、PlatformIO 路径和启动命令都按 `macOS` 编写
-- `Windows` 和 `Linux` 暂未完成联调，不建议直接按本说明试用
+- `macOS` 仍然是当前最完整、最省事的版本
+- `Windows` 现在可以手动安装并试用，但还没有一键启动器
+- `Linux` 暂未完成联调
 
 ## 路径说明
 
 下面文档里出现的路径都是示例值，不是固定值：
 
 - 把 `/path/to/friendmaker` 替换成你自己的项目目录
-- 把 `<your-serial-port>` 替换成你自己的串口设备，例如 `/dev/cu.usbserial-0001`
+- 把 `<your-serial-port>` 替换成你自己的串口设备，例如 macOS 下的 `/dev/cu.usbserial-0001` 或 Windows 下的 `COM3`
 - 如果 `pio` 已经在你的 shell `PATH` 里，可以直接写 `pio ...`
-- 如果没有，就继续用 `~/.platformio/penv/bin/pio ...`
+- 如果没有，就继续用完整路径：
+  - macOS：`~/.platformio/penv/bin/pio ...`
+  - Windows：`%USERPROFILE%\\.platformio\\penv\\Scripts\\pio.exe ...`
 
 ## 开始前必须确认
 
@@ -49,7 +55,7 @@
 
 你需要准备：
 
-- 一台 `macOS` 电脑
+- 一台 `macOS` 或 `Windows` 电脑
 - 一块 `ESP32-WROOM-32 / ESP-32S` 开发板
 - 一台 `Nintendo Switch`
 - 一根能正常传数据的 USB 线
@@ -84,7 +90,9 @@ npm run check
 
 如果这里没有报错，就说明桌面端已经能启动。
 
-## 3. macOS 一键启动
+## 3. 启动方式
+
+### 3.1 macOS 一键启动
 
 如果你是 `macOS` 用户，现在可以直接双击：
 
@@ -112,9 +120,24 @@ cd /path/to/friendmaker
 - 绘制过程中不要关闭这个启动出来的终端窗口
 - 启动器现在也会自动补装 `PlatformIO`，这样后续刷固件可以直接使用
 
+### 3.2 Windows 手动启动
+
+如果你是 `Windows` 用户，请先参考：
+
+- [Windows 手动安装说明](setup-windows.md)
+
+最短流程是：
+
+```powershell
+cd C:\path\to\friendmaker
+npm install
+npm run check
+npm run ui:dev
+```
+
 ## 4. 刷入 ESP32 固件
 
-先把开发板接到 Mac。
+先把开发板接到电脑。
 
 进入固件目录：
 
@@ -142,6 +165,13 @@ cd /path/to/friendmaker/firmware/esp32
 
 看完后按 `Ctrl+C` 退出串口监视器。  
 注意：**开着串口监视器时，网页无法同时连接这个串口。**
+
+Windows 示例：
+
+```powershell
+cd C:\path\to\friendmaker\firmware\esp32
+$env:USERPROFILE\.platformio\penv\Scripts\pio.exe run -e esp32dev_wireless -t upload --upload-port COM3
+```
 
 ## 5. 启动网页系统
 

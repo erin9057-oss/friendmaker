@@ -2,23 +2,31 @@
 
 > A macOS + ESP32 toolkit for automatically drawing pixel art in **Nintendo Switch** games, currently tailored for **《朋友收集：梦想生活》 / Tomodachi Life**.
 
-朋友制作器是一个面向 `macOS + ESP32-WROOM-32 / ESP-32S` 的自动绘制工具。  
+朋友制作器是一个面向 `macOS / Windows + ESP32-WROOM-32 / ESP-32S` 的自动绘制工具。  
 它会把图片转换成像素网格和手柄动作脚本，再通过 ESP32 模拟 Switch Pro Controller 输入，在游戏画板中自动完成绘制。
 
 **Keywords:** Friend Maker, 朋友制作器, Tomodachi Life, 朋友收集：梦想生活, Nintendo Switch auto draw, ESP32 Pro Controller emulator, pixel art drawing automation, macOS drawing studio, Bluetooth Classic HID.
 
 ![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)
-![Platform](https://img.shields.io/badge/platform-macOS-black.svg)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-black.svg)
 ![Hardware](https://img.shields.io/badge/hardware-ESP32--WROOM--32-orange.svg)
 ![Status](https://img.shields.io/badge/status-prototype-yellow.svg)
 
 ## Compatibility / 平台支持
 
-- **Currently supported:** `macOS`
-- **Not officially supported yet:** `Windows`, `Linux`
+- **Fully supported:** `macOS`
+- **Manual setup supported:** `Windows`
+- **Not officially supported yet:** `Linux`
 
-当前版本的文档、串口路径、PlatformIO 调用方式，以及试用流程都按 `macOS` 打磨。  
-网页前端本身接近跨平台，但整套“刷固件 -> 串口 -> ESP32 -> Switch”链路目前只按 `macOS` 验证，不建议直接给 Windows 用户试用。
+当前版本已经提供：
+
+- `macOS`：完整试用流程与一键启动
+- `Windows`：手动安装与手动启动流程
+
+参考：
+
+- [macOS / Windows 试用说明](docs/user-trial-guide.md)
+- [Windows 手动安装说明](docs/setup-windows.md)
 
 ## Showcase / 演示
 
@@ -111,8 +119,11 @@ Image Input
 Path note:
 
 - Replace `/path/to/friendmaker` with your own local project directory
-- Replace `<your-serial-port>` with your own serial device, such as `/dev/cu.usbserial-0001`
-- If `pio` is already in your shell `PATH`, you can use `pio ...`; otherwise use `~/.platformio/penv/bin/pio ...`
+- Replace `<your-serial-port>` with your own serial device, such as `/dev/cu.usbserial-0001` on macOS or `COM3` on Windows
+- If `pio` is already in your shell `PATH`, you can use `pio ...`
+- If not, use the full PlatformIO path:
+  - macOS: `~/.platformio/penv/bin/pio`
+  - Windows: `%USERPROFILE%\\.platformio\\penv\\Scripts\\pio.exe`
 
 ### One-click launch on macOS / macOS 一键启动
 
@@ -158,6 +169,13 @@ npm run check
 ```bash
 cd /path/to/friendmaker/firmware/esp32
 ~/.platformio/penv/bin/pio run -e esp32dev_wireless -t upload
+```
+
+Windows example:
+
+```powershell
+cd C:\path\to\friendmaker\firmware\esp32
+$env:USERPROFILE\.platformio\penv\Scripts\pio.exe run -e esp32dev_wireless -t upload --upload-port COM3
 ```
 
 ### 4. Start the web UI / 启动网页系统
