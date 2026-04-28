@@ -995,10 +995,11 @@ function syncStudioUi() {
   const backgroundHint = state.studio.removeBackground
     ? "已开启自动扣背景，会优先去掉白底、浅灰底和棋盘格假透明背景。"
     : "当前不会自动扣背景；如果素材是白底或棋盘格假透明图，建议开启。";
+  const squareBrushHint = "建议同时把 Switch 里的笔刷切到方块笔刷，整体观感通常会更美观。";
   els.studioModeHint.textContent =
     state.studio.colorMode === "mono"
-      ? `深色像素会绘制，浅色像素会保留为空白背景。当前会把图片映射到 250x250 画布，并按 ${state.studio.brushSize} 号笔和画布中心起步生成。${backgroundHint}`
-      : `当前会先把图片压到 ${state.studio.colorCount} 个官方色以内，再映射到游戏内置的 7x12 官方色盘，并按 ${state.studio.brushSize} 号笔生成。开始前请保持右侧 9 个槽位默认颜色不变。${backgroundHint}`;
+      ? `深色像素会绘制，浅色像素会保留为空白背景。当前会把图片映射到 250x250 画布，并按 ${state.studio.brushSize} 号笔和画布中心起步生成。${squareBrushHint}${backgroundHint}`
+      : `当前会先把图片压到 ${state.studio.colorCount} 个官方色以内，再映射到游戏内置的 7x12 官方色盘，并按 ${state.studio.brushSize} 号笔生成。开始前请保持右侧 9 个槽位默认颜色不变。${squareBrushHint}${backgroundHint}`;
   els.studioPortSelect.disabled = state.studio.busy || executionActive;
   els.refreshPortsButton.disabled = state.studio.busy || executionActive;
   els.sizeSelect.disabled = state.studio.busy || executionActive;
@@ -1067,8 +1068,8 @@ function syncStudioUi() {
 
   els.executionHint.textContent =
     state.studio.colorMode === "mono"
-      ? `当前会把 250x250 的黑白脚本通过串口发送到 ${state.selectedPortPath}，由 ESP32 从画布中心起步，按 ${state.studio.brushSize} 号笔继续翻译成方向键移动与 A 绘制。`
-      : `当前会把 250x250 的官方色脚本通过串口发送到 ${state.selectedPortPath}。请先保持右侧 9 个槽位默认颜色不变，ESP32 会按这组默认槽位状态去配置内置 7x12 色盘，并按 ${state.studio.brushSize} 号笔绘制。`;
+      ? `当前会把 250x250 的黑白脚本通过串口发送到 ${state.selectedPortPath}，由 ESP32 从画布中心起步，按 ${state.studio.brushSize} 号笔继续翻译成方向键移动与 A 绘制。建议开始前把 Switch 里的笔刷切到方块笔刷，整体观感通常会更美观。`
+      : `当前会把 250x250 的官方色脚本通过串口发送到 ${state.selectedPortPath}。请先保持右侧 9 个槽位默认颜色不变，ESP32 会按这组默认槽位状态去配置内置 7x12 色盘，并按 ${state.studio.brushSize} 号笔绘制。建议开始前把 Switch 里的笔刷切到方块笔刷，整体观感通常会更美观。`;
   renderStudioConnectionStatus();
 }
 
