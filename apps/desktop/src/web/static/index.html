@@ -127,7 +127,7 @@
             <div class="execution-box mono-note-box">
               <div class="panel-head compact">
                 <h2>绘制模式</h2>
-                <p>当前固定走 256x256 画布并从画布中心起步。单色模式画黑白图，官方色模式会量化到游戏内置的 7x12 色盘；画笔大小按下方选择生成。建议在游戏里切换为方块笔刷，整体观感通常会更美观。</p>
+                <p>当前固定走 256x256 脚本坐标画布并从画布中心起步。单色模式画黑白图，官方色模式会量化到游戏内置的 7x12 色盘；画笔大小按下方选择生成。建议在游戏里切换为方块笔刷，整体观感通常会更美观。</p>
               </div>
 
               <p class="hint" id="studio-mode-hint">
@@ -188,60 +188,51 @@
             <label class="range-row">
               <span>导入缩放</span>
               <input id="scale-range" type="range" min="25" max="200" step="1" value="100" />
-              <span class="range-value-stack">
-                <strong id="scale-value">100%</strong>
-                <span class="range-number-group">
-                  <input
-                    id="scale-input"
-                    class="range-number-input"
-                    type="number"
-                    min="25"
-                    max="200"
-                    step="1"
-                    value="100"
-                  />
-                  <span class="range-unit">%</span>
-                </span>
+              <span class="range-number-group">
+                <input
+                  id="scale-input"
+                  class="range-number-input"
+                  type="number"
+                  min="25"
+                  max="200"
+                  step="1"
+                  value="100"
+                />
+                <span class="range-unit">%</span>
               </span>
             </label>
 
             <label class="range-row">
               <span>横向位置</span>
               <input id="offset-x-range" type="range" min="-100" max="100" step="1" value="0" />
-              <span class="range-value-stack">
-                <strong id="offset-x-value">居中</strong>
-                <span class="range-number-group">
-                  <input
-                    id="offset-x-input"
-                    class="range-number-input"
-                    type="number"
-                    min="-100"
-                    max="100"
-                    step="1"
-                    value="0"
-                  />
-                  <span class="range-unit">%</span>
-                </span>
+              <span class="range-number-group">
+                <input
+                  id="offset-x-input"
+                  class="range-number-input"
+                  type="number"
+                  min="-100"
+                  max="100"
+                  step="1"
+                  value="0"
+                />
+                <span class="range-unit">%</span>
               </span>
             </label>
 
             <label class="range-row">
               <span>纵向位置</span>
               <input id="offset-y-range" type="range" min="-100" max="100" step="1" value="0" />
-              <span class="range-value-stack">
-                <strong id="offset-y-value">居中</strong>
-                <span class="range-number-group">
-                  <input
-                    id="offset-y-input"
-                    class="range-number-input"
-                    type="number"
-                    min="-100"
-                    max="100"
-                    step="1"
-                    value="0"
-                  />
-                  <span class="range-unit">%</span>
-                </span>
+              <span class="range-number-group">
+                <input
+                  id="offset-y-input"
+                  class="range-number-input"
+                  type="number"
+                  min="-100"
+                  max="100"
+                  step="1"
+                  value="0"
+                />
+                <span class="range-unit">%</span>
               </span>
             </label>
 
@@ -303,9 +294,9 @@
                 <span>辅助线</span>
                 <select id="preview-guide-select">
                   <option value="none" selected>关闭</option>
-                  <option value="quad">田字</option>
-                  <option value="quarter">田字 + 4x4</option>
-                  <option value="eighth">4x4 + 16x16细分</option>
+                  <option value="quad">2*2</option>
+                  <option value="quarter">4*4</option>
+                  <option value="eighth">16*16</option>
                 </select>
                 <small>只用于预览里辅助对齐，不影响最终生成。</small>
               </label>

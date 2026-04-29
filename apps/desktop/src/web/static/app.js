@@ -105,13 +105,10 @@ const els = {
   thresholdValue: document.getElementById("threshold-value"),
   scaleRange: document.getElementById("scale-range"),
   scaleInput: document.getElementById("scale-input"),
-  scaleValue: document.getElementById("scale-value"),
   offsetXRange: document.getElementById("offset-x-range"),
   offsetXInput: document.getElementById("offset-x-input"),
-  offsetXValue: document.getElementById("offset-x-value"),
   offsetYRange: document.getElementById("offset-y-range"),
   offsetYInput: document.getElementById("offset-y-input"),
-  offsetYValue: document.getElementById("offset-y-value"),
   studioPortSelect: document.getElementById("studio-port-select"),
   refreshPortsButton: document.getElementById("refresh-ports-button"),
   executionHint: document.getElementById("execution-hint"),
@@ -1293,13 +1290,10 @@ function syncStudioUi() {
   els.brushSizeSelect.value = String(state.studio.brushSize);
   els.scaleRange.value = String(state.studio.imageScalePercent);
   els.scaleInput.value = String(state.studio.imageScalePercent);
-  els.scaleValue.textContent = `${state.studio.imageScalePercent}%`;
   els.offsetXRange.value = String(state.studio.imageOffsetXPercent);
   els.offsetXInput.value = String(state.studio.imageOffsetXPercent);
-  els.offsetXValue.textContent = formatOffsetLabel(state.studio.imageOffsetXPercent);
   els.offsetYRange.value = String(state.studio.imageOffsetYPercent);
   els.offsetYInput.value = String(state.studio.imageOffsetYPercent);
-  els.offsetYValue.textContent = formatOffsetLabel(state.studio.imageOffsetYPercent);
   els.previewGuideSelect.value = state.studio.previewGuideMode;
   els.previewCanvas.dataset.guide = state.studio.previewGuideMode;
   els.colorModeSelect.value = state.studio.colorMode;
@@ -1316,7 +1310,7 @@ function syncStudioUi() {
   );
   els.studioModeHint.textContent =
     state.studio.colorMode === "mono"
-      ? `深色像素会绘制，浅色像素会保留为空白背景。当前会先按 ${state.studio.imageScalePercent}% 调整图片大小，再放进 256x256 画布，并按 ${state.studio.brushSize} 号笔和画布中心起步生成。${scaleHint}${positionHint}${squareBrushHint}${backgroundHint}`
+      ? `深色像素会绘制，浅色像素会保留为空白背景。当前会先按 ${state.studio.imageScalePercent}% 调整图片大小，再放进 256x256 脚本坐标画布，并按 ${state.studio.brushSize} 号笔和画布中心起步生成。${scaleHint}${positionHint}${squareBrushHint}${backgroundHint}`
       : `当前会先按 ${state.studio.imageScalePercent}% 调整图片大小，再把图片压到 ${state.studio.colorCount} 个官方色以内，并映射到游戏内置的 7x12 官方色盘，再按 ${state.studio.brushSize} 号笔生成。${scaleHint}${positionHint}开始前请保持右侧 9 个槽位默认颜色不变。${squareBrushHint}${backgroundHint}`;
   els.studioPortSelect.disabled = state.studio.busy || executionActive;
   els.refreshPortsButton.disabled = state.studio.busy || executionActive;

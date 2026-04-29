@@ -257,10 +257,11 @@ function toCanvasPosition(
   profile: DrawingProfile,
 ): { x: number; y: number } {
   const step = Math.max(1, profile.brushSize);
+  const brushCenterOffset = Math.floor(step / 2);
 
   return {
-    x: Math.min(point.x * step, profile.canvasWidth - 1),
-    y: Math.min(point.y * step, profile.canvasHeight - 1),
+    x: Math.min(point.x * step + brushCenterOffset, profile.canvasWidth - 1),
+    y: Math.min(point.y * step + brushCenterOffset, profile.canvasHeight - 1),
   };
 }
 
