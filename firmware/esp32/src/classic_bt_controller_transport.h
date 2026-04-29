@@ -27,6 +27,7 @@ class ClassicBtControllerTransport : public ControllerTransport {
   bool sendCurrentInputReport(bool logFailure);
   bool sendSubcommandReply(uint8_t reportId, const uint8_t *data, size_t length, const char *label);
   bool attemptVirtualCablePlug(const uint8_t peerAddress[6], const char *reason);
+  void enterReconnectableState(const char *reason);
   void processIncomingReport(uint8_t reportId, uint16_t len, uint8_t *data);
   void handleGapEvent(int event, void *param);
   void handleHidEvent(int event, void *param);
@@ -63,4 +64,15 @@ class ClassicBtControllerTransport : public ControllerTransport {
   TaskHandle_t sendTaskHandle_ = nullptr;
   uint8_t lastPeerAddress_[6] = {};
   bool hasPeerAddress_ = false;
+  uint32_t ignoredReportCount_ = 0;
+  uint8_t lastIgnoredReportId_ = 0;
+  uint16_t lastIgnoredReportLen_ = 0;
+  uint8_t lastAclDisconnectReason_ = 0;
+  int lastHidCloseStatus_ = -1;
+  int lastHidCloseConnStatus_ = -1;
+  int lastSendReportStatus_ = -1;
+  uint8_t lastSendReportReason_ = 0;
+  uint8_t lastSendReportId_ = 0;
+  uint32_t sendReportFailureCount_ = 0;
+  const char *lastDropReason_ = "none";
 };

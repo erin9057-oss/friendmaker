@@ -370,6 +370,17 @@ void ClassicBtControllerTransport::clearConnectionState() {
   timer_ = 0;
   initStep_ = "idle";
   initError_ = "none";
+  ignoredReportCount_ = 0;
+  lastIgnoredReportId_ = 0;
+  lastIgnoredReportLen_ = 0;
+  lastAclDisconnectReason_ = 0;
+  lastHidCloseStatus_ = -1;
+  lastHidCloseConnStatus_ = -1;
+  lastSendReportStatus_ = -1;
+  lastSendReportReason_ = 0;
+  lastSendReportId_ = 0;
+  sendReportFailureCount_ = 0;
+  lastDropReason_ = "none";
 }
 
 bool ClassicBtControllerTransport::shutdownClassicBluetooth() {
@@ -593,6 +604,29 @@ bool ClassicBtControllerTransport::resetConnection() {
   return true;
 }
 
+void ClassicBtControllerTransport::enterReconnectableState(const char *reason) {
+  connected_ = false;
+  readyForReports_ = false;
+  authComplete_ = false;
+  pairingComplete_ = false;
+  paired_ = false;
+  discoverable_ = true;
+  lastDropReason_ = reason;
+  clearInputs();
+
+  esp_err_t err = ESP_OK;
+  if (gapReady_ && appRegistered_) {
+    err = esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+    discoverable_ = err == ESP_OK;
+  }
+
+  Serial.printf(
+      "INFO bt reconnectable reason=%s discoverable=%s err=%s\n",
+      reason,
+      boolName(discoverable_),
+      esp_err_to_name(err));
+}
+
 void ClassicBtControllerTransport::printStatus(Print &output) const {
   output.println("INFO bt_mode=classic-bt-hid");
   output.println("INFO bt_profile=uartswitchcon-pro-controller");
@@ -622,6 +656,28 @@ void ClassicBtControllerTransport::printStatus(Print &output) const {
   output.println(initStep_);
   output.print("INFO bt_init_error=");
   output.println(initError_);
+  output.print("INFO bt_last_drop_reason=");
+  output.println(lastDropReason_);
+  output.print("INFO bt_ignored_report_count=");
+  output.println(ignoredReportCount_);
+  output.print("INFO bt_last_ignored_report=");
+  output.print(lastIgnoredReportId_);
+  output.print("/");
+  output.println(lastIgnoredReportLen_);
+  output.print("INFO bt_last_acl_disconnect_reason=");
+  output.println(lastAclDisconnectReason_);
+  output.print("INFO bt_last_hid_close_status=");
+  output.println(lastHidCloseStatus_);
+  output.print("INFO bt_last_hid_close_conn_status=");
+  output.println(lastHidCloseConnStatus_);
+  output.print("INFO bt_send_report_failures=");
+  output.println(sendReportFailureCount_);
+  output.print("INFO bt_last_send_report_status=");
+  output.println(lastSendReportStatus_);
+  output.print("INFO bt_last_send_report_reason=");
+  output.println(lastSendReportReason_);
+  output.print("INFO bt_last_send_report_id=");
+  output.println(lastSendReportId_);
 
   if (hasPeerAddress_) {
     output.print("INFO bt_last_peer=");
@@ -651,9 +707,17 @@ bool ClassicBtControllerTransport::sendCurrentInputReport(bool logFailure) {
       payloadLength,
       const_cast<uint8_t *>(payload));
   if (err != ESP_OK) {
+    sendReportFailureCount_ += 1;
+    lastSendReportStatus_ = static_cast<int>(err);
+    lastSendReportReason_ = 0;
+    lastSendReportId_ = 0x30;
     readyForReports_ = false;
     if (logFailure) {
-      Serial.printf("WARN bt send_report failed err=%s\n", esp_err_to_name(err));
+      Serial.printf(
+          "WARN bt send_report failed err=%s connected=%s fail_count=%lu\n",
+          esp_err_to_name(err),
+          boolName(connected_),
+          static_cast<unsigned long>(sendReportFailureCount_));
     }
     return false;
   }
@@ -675,8 +739,16 @@ bool ClassicBtControllerTransport::sendSubcommandReply(
       length,
       const_cast<uint8_t *>(data));
   if (err != ESP_OK) {
+    sendReportFailureCount_ += 1;
+    lastSendReportStatus_ = static_cast<int>(err);
+    lastSendReportReason_ = 0;
+    lastSendReportId_ = reportId;
     readyForReports_ = false;
-    Serial.printf("WARN bt reply failed label=%s err=%s\n", label, esp_err_to_name(err));
+    Serial.printf(
+        "WARN bt reply failed label=%s err=%s fail_count=%lu\n",
+        label,
+        esp_err_to_name(err),
+        static_cast<unsigned long>(sendReportFailureCount_));
     return false;
   }
 
@@ -709,7 +781,18 @@ bool ClassicBtControllerTransport::attemptVirtualCablePlug(
 
 void ClassicBtControllerTransport::processIncomingReport(uint8_t reportId, uint16_t len, uint8_t *data) {
   if (len < 12 || data == nullptr) {
-    Serial.printf("INFO bt intr ignored report=%u len=%u\n", reportId, len);
+    const bool repeated = ignoredReportCount_ > 0 && lastIgnoredReportId_ == reportId &&
+                          lastIgnoredReportLen_ == len;
+    ignoredReportCount_ += 1;
+    lastIgnoredReportId_ = reportId;
+    lastIgnoredReportLen_ = len;
+    if (!repeated || ignoredReportCount_ <= 5 || (ignoredReportCount_ % 20) == 0) {
+      Serial.printf(
+          "INFO bt intr ignored report=%u len=%u count=%lu\n",
+          reportId,
+          len,
+          static_cast<unsigned long>(ignoredReportCount_));
+    }
     return;
   }
 
@@ -816,11 +899,8 @@ void ClassicBtControllerTransport::handleGapEvent(int event, void *rawParam) {
       break;
     case ESP_BT_GAP_ACL_DISCONN_CMPL_STAT_EVT:
       Serial.printf("INFO bt acl-disconnect reason=%u\n", param->acl_disconn_cmpl_stat.reason);
-      connected_ = false;
-      readyForReports_ = false;
-      authComplete_ = false;
-      pairingComplete_ = false;
-      paired_ = false;
+      lastAclDisconnectReason_ = param->acl_disconn_cmpl_stat.reason;
+      enterReconnectableState("acl-disconnect");
       break;
     default:
       break;
@@ -891,19 +971,21 @@ void ClassicBtControllerTransport::handleHidEvent(int event, void *rawParam) {
           connected_ ? formatBluetoothAddress(lastPeerAddress_).c_str() : "unknown");
       break;
     case ESP_HIDD_CLOSE_EVT:
-      connected_ = false;
-      authComplete_ = false;
-      pairingComplete_ = false;
-      paired_ = false;
-      readyForReports_ = false;
-      discoverable_ = true;
-      esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+      lastHidCloseStatus_ = param->close.status;
+      lastHidCloseConnStatus_ = param->close.conn_status;
+      enterReconnectableState("hid-close");
       Serial.printf(
           "INFO bt hid event=close status=%d conn=%d\n",
           param->close.status,
           param->close.conn_status);
       break;
     case ESP_HIDD_SEND_REPORT_EVT:
+      if (param->send_report.status != ESP_HIDD_SUCCESS) {
+        sendReportFailureCount_ += 1;
+      }
+      lastSendReportStatus_ = param->send_report.status;
+      lastSendReportReason_ = param->send_report.reason;
+      lastSendReportId_ = param->send_report.report_id;
       readyForReports_ = param->send_report.status == ESP_HIDD_SUCCESS && connected_;
       if (param->send_report.status != ESP_HIDD_SUCCESS) {
         Serial.printf(
@@ -964,13 +1046,7 @@ void ClassicBtControllerTransport::handleHidEvent(int event, void *rawParam) {
       Serial.printf("INFO bt hid event=unregister-app status=%d\n", param->unregister_app.status);
       break;
     case ESP_HIDD_VC_UNPLUG_EVT:
-      connected_ = false;
-      authComplete_ = false;
-      pairingComplete_ = false;
-      paired_ = false;
-      readyForReports_ = false;
-      discoverable_ = true;
-      esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+      enterReconnectableState("vc-unplug");
       Serial.printf(
           "INFO bt hid event=vc-unplug status=%d conn=%d\n",
           param->vc_unplug.status,
