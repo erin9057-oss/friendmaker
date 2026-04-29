@@ -18,6 +18,7 @@ const state = {
     imageScalePercent: 100,
     imageOffsetXPercent: 0,
     imageOffsetYPercent: 0,
+    previewGuideMode: "none",
     colorMode: "mono",
     colorCount: 32,
     removeBackground: false,
@@ -103,10 +104,13 @@ const els = {
   thresholdRange: document.getElementById("threshold-range"),
   thresholdValue: document.getElementById("threshold-value"),
   scaleRange: document.getElementById("scale-range"),
+  scaleInput: document.getElementById("scale-input"),
   scaleValue: document.getElementById("scale-value"),
   offsetXRange: document.getElementById("offset-x-range"),
+  offsetXInput: document.getElementById("offset-x-input"),
   offsetXValue: document.getElementById("offset-x-value"),
   offsetYRange: document.getElementById("offset-y-range"),
+  offsetYInput: document.getElementById("offset-y-input"),
   offsetYValue: document.getElementById("offset-y-value"),
   studioPortSelect: document.getElementById("studio-port-select"),
   refreshPortsButton: document.getElementById("refresh-ports-button"),
@@ -120,6 +124,8 @@ const els = {
   resetExecutionButton: document.getElementById("reset-execution-button"),
   studioExecutionStatus: document.getElementById("studio-execution-status"),
   autoRemoveBackgroundCheckbox: document.getElementById("auto-remove-background-checkbox"),
+  previewGuideSelect: document.getElementById("preview-guide-select"),
+  previewCanvas: document.getElementById("preview-canvas"),
   previewImage: document.getElementById("preview-image"),
   previewEmpty: document.getElementById("preview-empty"),
   officialPalettePanel: document.getElementById("official-palette-panel"),
@@ -193,6 +199,16 @@ const COLOR_COUNT_OPTIONS_BY_MODE = {
   official: [8, 16, 32, 64, 84],
 };
 
+const STUDIO_IMAGE_SCALE_LIMITS = {
+  min: 25,
+  max: 200,
+};
+
+const STUDIO_IMAGE_OFFSET_LIMITS = {
+  min: -100,
+  max: 100,
+};
+
 els.pageTabs.forEach((button) => {
   button.addEventListener("click", () => {
     switchPage(button.dataset.pageTarget ?? "studio");
@@ -212,28 +228,39 @@ els.brushSizeSelect.addEventListener("change", () => {
 });
 
 els.scaleRange.addEventListener("input", () => {
-  state.studio.imageScalePercent = Number(els.scaleRange.value || state.studio.imageScalePercent);
-  els.scaleValue.textContent = `${state.studio.imageScalePercent}%`;
-  syncStudioUi();
-  scheduleStudioPreviewRefresh();
+  setStudioImageScalePercent(els.scaleRange.value);
 });
 
 els.offsetXRange.addEventListener("input", () => {
-  state.studio.imageOffsetXPercent = Number(
-    els.offsetXRange.value || state.studio.imageOffsetXPercent,
-  );
-  els.offsetXValue.textContent = formatOffsetLabel(state.studio.imageOffsetXPercent);
-  syncStudioUi();
-  scheduleStudioPreviewRefresh();
+  setStudioImageOffsetXPercent(els.offsetXRange.value);
 });
 
 els.offsetYRange.addEventListener("input", () => {
-  state.studio.imageOffsetYPercent = Number(
-    els.offsetYRange.value || state.studio.imageOffsetYPercent,
-  );
-  els.offsetYValue.textContent = formatOffsetLabel(state.studio.imageOffsetYPercent);
+  setStudioImageOffsetYPercent(els.offsetYRange.value);
+});
+
+els.scaleInput.addEventListener("change", () => {
+  setStudioImageScalePercent(els.scaleInput.value);
+});
+
+els.scaleInput.addEventListener("blur", () => {
   syncStudioUi();
-  scheduleStudioPreviewRefresh();
+});
+
+els.offsetXInput.addEventListener("change", () => {
+  setStudioImageOffsetXPercent(els.offsetXInput.value);
+});
+
+els.offsetXInput.addEventListener("blur", () => {
+  syncStudioUi();
+});
+
+els.offsetYInput.addEventListener("change", () => {
+  setStudioImageOffsetYPercent(els.offsetYInput.value);
+});
+
+els.offsetYInput.addEventListener("blur", () => {
+  syncStudioUi();
 });
 
 els.colorModeSelect.addEventListener("change", () => {
@@ -254,6 +281,13 @@ els.autoRemoveBackgroundCheckbox.addEventListener("change", () => {
   state.studio.removeBackground = els.autoRemoveBackgroundCheckbox.checked;
   syncStudioUi();
   scheduleStudioPreviewRefresh();
+});
+
+els.previewGuideSelect.addEventListener("change", () => {
+  const nextMode = els.previewGuideSelect.value;
+  state.studio.previewGuideMode =
+    nextMode === "quad" || nextMode === "quarter" || nextMode === "eighth" ? nextMode : "none";
+  syncStudioUi();
 });
 
 els.thresholdRange.addEventListener("input", () => {
@@ -1214,11 +1248,16 @@ function syncStudioUi() {
   els.sizeSelect.value = String(state.studio.canvasSize);
   els.brushSizeSelect.value = String(state.studio.brushSize);
   els.scaleRange.value = String(state.studio.imageScalePercent);
+  els.scaleInput.value = String(state.studio.imageScalePercent);
   els.scaleValue.textContent = `${state.studio.imageScalePercent}%`;
   els.offsetXRange.value = String(state.studio.imageOffsetXPercent);
+  els.offsetXInput.value = String(state.studio.imageOffsetXPercent);
   els.offsetXValue.textContent = formatOffsetLabel(state.studio.imageOffsetXPercent);
   els.offsetYRange.value = String(state.studio.imageOffsetYPercent);
+  els.offsetYInput.value = String(state.studio.imageOffsetYPercent);
   els.offsetYValue.textContent = formatOffsetLabel(state.studio.imageOffsetYPercent);
+  els.previewGuideSelect.value = state.studio.previewGuideMode;
+  els.previewCanvas.dataset.guide = state.studio.previewGuideMode;
   els.colorModeSelect.value = state.studio.colorMode;
   els.autoRemoveBackgroundCheckbox.checked = state.studio.removeBackground;
   syncStudioColorCountOptions();
@@ -1240,10 +1279,14 @@ function syncStudioUi() {
   els.sizeSelect.disabled = state.studio.busy || executionActive;
   els.brushSizeSelect.disabled = state.studio.busy || executionActive;
   els.scaleRange.disabled = state.studio.busy || executionActive;
+  els.scaleInput.disabled = state.studio.busy || executionActive;
   els.offsetXRange.disabled = state.studio.busy || executionActive;
+  els.offsetXInput.disabled = state.studio.busy || executionActive;
   els.offsetYRange.disabled = state.studio.busy || executionActive;
+  els.offsetYInput.disabled = state.studio.busy || executionActive;
   els.colorModeSelect.disabled = state.studio.busy || executionActive;
   els.autoRemoveBackgroundCheckbox.disabled = state.studio.busy || executionActive;
+  els.previewGuideSelect.disabled = false;
   els.colorCountSelect.disabled =
     state.studio.busy || executionActive || state.studio.colorMode === "mono";
   els.thresholdLabel.textContent =
@@ -1716,6 +1759,76 @@ function getErrorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function parseIntegerInput(value) {
+  const normalized = String(value ?? "").trim();
+
+  if (!normalized || normalized === "+" || normalized === "-") {
+    return null;
+  }
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? Math.round(parsed) : null;
+}
+
+function normalizeStudioNumericValue(value, fallback, limits) {
+  const parsed = parseIntegerInput(value);
+
+  if (parsed === null) {
+    return fallback;
+  }
+
+  return clampNumber(parsed, limits.min, limits.max);
+}
+
+function setStudioImageScalePercent(value) {
+  const nextValue = normalizeStudioNumericValue(
+    value,
+    state.studio.imageScalePercent,
+    STUDIO_IMAGE_SCALE_LIMITS,
+  );
+  const changed = nextValue !== state.studio.imageScalePercent;
+  state.studio.imageScalePercent = nextValue;
+  syncStudioUi();
+
+  if (changed) {
+    scheduleStudioPreviewRefresh();
+  }
+}
+
+function setStudioImageOffsetXPercent(value) {
+  const nextValue = normalizeStudioNumericValue(
+    value,
+    state.studio.imageOffsetXPercent,
+    STUDIO_IMAGE_OFFSET_LIMITS,
+  );
+  const changed = nextValue !== state.studio.imageOffsetXPercent;
+  state.studio.imageOffsetXPercent = nextValue;
+  syncStudioUi();
+
+  if (changed) {
+    scheduleStudioPreviewRefresh();
+  }
+}
+
+function setStudioImageOffsetYPercent(value) {
+  const nextValue = normalizeStudioNumericValue(
+    value,
+    state.studio.imageOffsetYPercent,
+    STUDIO_IMAGE_OFFSET_LIMITS,
+  );
+  const changed = nextValue !== state.studio.imageOffsetYPercent;
+  state.studio.imageOffsetYPercent = nextValue;
+  syncStudioUi();
+
+  if (changed) {
+    scheduleStudioPreviewRefresh();
+  }
+}
+
 function formatOffsetLabel(value) {
   if (value === 0) {
     return "居中";
@@ -1755,12 +1868,20 @@ async function init() {
   switchPage("studio");
   state.studio.canvasSize = Number(els.sizeSelect.value || state.studio.canvasSize);
   state.studio.brushSize = Number(els.brushSizeSelect.value || state.studio.brushSize);
-  state.studio.imageScalePercent = Number(els.scaleRange.value || state.studio.imageScalePercent);
-  state.studio.imageOffsetXPercent = Number(
-    els.offsetXRange.value || state.studio.imageOffsetXPercent,
+  state.studio.imageScalePercent = normalizeStudioNumericValue(
+    els.scaleInput.value || els.scaleRange.value,
+    state.studio.imageScalePercent,
+    STUDIO_IMAGE_SCALE_LIMITS,
   );
-  state.studio.imageOffsetYPercent = Number(
-    els.offsetYRange.value || state.studio.imageOffsetYPercent,
+  state.studio.imageOffsetXPercent = normalizeStudioNumericValue(
+    els.offsetXInput.value || els.offsetXRange.value,
+    state.studio.imageOffsetXPercent,
+    STUDIO_IMAGE_OFFSET_LIMITS,
+  );
+  state.studio.imageOffsetYPercent = normalizeStudioNumericValue(
+    els.offsetYInput.value || els.offsetYRange.value,
+    state.studio.imageOffsetYPercent,
+    STUDIO_IMAGE_OFFSET_LIMITS,
   );
   syncStudioColorCountOptions();
   await Promise.all([refreshPorts(), loadFirmwareInfo(), loadOfficialPalette(), pollStudioExecutionStatus()]);

@@ -245,7 +245,8 @@ label span {
 select,
 textarea,
 button,
-input[type="range"] {
+input[type="range"],
+input[type="number"] {
   font: inherit;
 }
 
@@ -271,8 +272,46 @@ textarea {
   margin-top: 18px;
 }
 
+.range-value-stack {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+}
+
+.range-number-group {
+  display: inline-grid;
+  grid-template-columns: minmax(72px, 84px) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.range-number-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink);
+  text-align: right;
+}
+
+.range-number-input:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.range-unit {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+
 .preview-tools {
   margin-top: 18px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
+  gap: 12px;
+  align-items: start;
 }
 
 .checkbox-card {
@@ -303,6 +342,26 @@ textarea {
 }
 
 .checkbox-copy small {
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+
+.preview-select-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid rgba(19, 34, 56, 0.1);
+  border-radius: 18px;
+  background: rgba(19, 34, 56, 0.04);
+}
+
+.preview-select-card span {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+
+.preview-select-card small {
   color: var(--ink-soft);
   line-height: 1.5;
 }
@@ -665,7 +724,7 @@ button.ghost {
   position: relative;
   width: min(100%, 460px);
   aspect-ratio: 1;
-  border-radius: 24px;
+  border-radius: 0;
   overflow: hidden;
   border: 1px solid rgba(19, 34, 56, 0.12);
   box-shadow:
@@ -680,22 +739,6 @@ button.ghost {
   background-position: 0 0, 0 12px, 12px -12px, -12px 0;
 }
 
-.preview-canvas::after {
-  content: "256 x 256 Canvas";
-  position: absolute;
-  top: 14px;
-  left: 16px;
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.92);
-  color: var(--ink-soft);
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  pointer-events: none;
-}
-
 .preview-frame img {
   display: none;
   width: 100%;
@@ -706,6 +749,141 @@ button.ghost {
 
 .preview-frame img.visible {
   display: block;
+}
+
+.preview-guide {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.preview-canvas[data-guide="quad"] .preview-guide {
+  opacity: 1;
+  background-image:
+    linear-gradient(
+      to right,
+      transparent calc(50% - 1px),
+      rgba(19, 34, 56, 0.95) calc(50% - 1px),
+      rgba(19, 34, 56, 0.95) calc(50% + 1px),
+      transparent calc(50% + 1px)
+    ),
+    linear-gradient(
+      to bottom,
+      transparent calc(50% - 1px),
+      rgba(255, 122, 69, 0.95) calc(50% - 1px),
+      rgba(255, 122, 69, 0.95) calc(50% + 1px),
+      transparent calc(50% + 1px)
+    );
+}
+
+.preview-canvas[data-guide="quarter"] .preview-guide {
+  opacity: 1;
+  background-image:
+    linear-gradient(
+      to right,
+      transparent calc(50% - 1px),
+      rgba(19, 34, 56, 0.95) calc(50% - 1px),
+      rgba(19, 34, 56, 0.95) calc(50% + 1px),
+      transparent calc(50% + 1px)
+    ),
+    linear-gradient(
+      to bottom,
+      transparent calc(50% - 1px),
+      rgba(255, 122, 69, 0.95) calc(50% - 1px),
+      rgba(255, 122, 69, 0.95) calc(50% + 1px),
+      transparent calc(50% + 1px)
+    ),
+    linear-gradient(
+      to right,
+      transparent calc(25% - 1px),
+      rgba(148, 163, 184, 0.9) calc(25% - 1px),
+      rgba(148, 163, 184, 0.9) calc(25% + 1px),
+      transparent calc(25% + 1px)
+    ),
+    linear-gradient(
+      to right,
+      transparent calc(75% - 1px),
+      rgba(148, 163, 184, 0.9) calc(75% - 1px),
+      rgba(148, 163, 184, 0.9) calc(75% + 1px),
+      transparent calc(75% + 1px)
+    ),
+    linear-gradient(
+      to bottom,
+      transparent calc(25% - 1px),
+      rgba(148, 163, 184, 0.9) calc(25% - 1px),
+      rgba(148, 163, 184, 0.9) calc(25% + 1px),
+      transparent calc(25% + 1px)
+    ),
+    linear-gradient(
+      to bottom,
+      transparent calc(75% - 1px),
+      rgba(148, 163, 184, 0.9) calc(75% - 1px),
+      rgba(148, 163, 184, 0.9) calc(75% + 1px),
+      transparent calc(75% + 1px)
+    );
+}
+
+.preview-canvas[data-guide="eighth"] .preview-guide {
+  opacity: 1;
+  background-image:
+    linear-gradient(
+      to right,
+      transparent calc(50% - 1px),
+      rgba(19, 34, 56, 0.95) calc(50% - 1px),
+      rgba(19, 34, 56, 0.95) calc(50% + 1px),
+      transparent calc(50% + 1px)
+    ),
+    linear-gradient(
+      to bottom,
+      transparent calc(50% - 1px),
+      rgba(255, 122, 69, 0.95) calc(50% - 1px),
+      rgba(255, 122, 69, 0.95) calc(50% + 1px),
+      transparent calc(50% + 1px)
+    ),
+    linear-gradient(
+      to right,
+      transparent calc(25% - 1px),
+      rgba(148, 163, 184, 0.9) calc(25% - 1px),
+      rgba(148, 163, 184, 0.9) calc(25% + 1px),
+      transparent calc(25% + 1px)
+    ),
+    linear-gradient(
+      to right,
+      transparent calc(75% - 1px),
+      rgba(148, 163, 184, 0.9) calc(75% - 1px),
+      rgba(148, 163, 184, 0.9) calc(75% + 1px),
+      transparent calc(75% + 1px)
+    ),
+    linear-gradient(
+      to bottom,
+      transparent calc(25% - 1px),
+      rgba(148, 163, 184, 0.9) calc(25% - 1px),
+      rgba(148, 163, 184, 0.9) calc(25% + 1px),
+      transparent calc(25% + 1px)
+    ),
+    linear-gradient(
+      to bottom,
+      transparent calc(75% - 1px),
+      rgba(148, 163, 184, 0.9) calc(75% - 1px),
+      rgba(148, 163, 184, 0.9) calc(75% + 1px),
+      transparent calc(75% + 1px)
+    ),
+    repeating-linear-gradient(
+      to right,
+      transparent 0,
+      transparent calc(6.25% - 0.5px),
+      rgba(203, 213, 225, 0.95) calc(6.25% - 0.5px),
+      rgba(203, 213, 225, 0.95) calc(6.25% + 0.5px)
+    ),
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent calc(6.25% - 0.5px),
+      rgba(203, 213, 225, 0.95) calc(6.25% - 0.5px),
+      rgba(203, 213, 225, 0.95) calc(6.25% + 0.5px)
+    );
 }
 
 .preview-meta-strip {
@@ -882,6 +1060,10 @@ button.ghost {
     justify-self: start;
   }
 
+  .preview-tools {
+    grid-template-columns: 1fr;
+  }
+
   .firmware-log-panel,
   .controller-log-panel {
     grid-column: auto;
@@ -913,6 +1095,10 @@ button.ghost {
   .range-row {
     grid-template-columns: 1fr;
     align-items: start;
+  }
+
+  .range-value-stack {
+    justify-items: start;
   }
 
   .studio-connection-card,

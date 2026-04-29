@@ -133,20 +133,62 @@
 
             <label class="range-row">
               <span>导入缩放</span>
-              <input id="scale-range" type="range" min="25" max="200" step="5" value="100" />
-              <strong id="scale-value">100%</strong>
+              <input id="scale-range" type="range" min="25" max="200" step="1" value="100" />
+              <span class="range-value-stack">
+                <strong id="scale-value">100%</strong>
+                <span class="range-number-group">
+                  <input
+                    id="scale-input"
+                    class="range-number-input"
+                    type="number"
+                    min="25"
+                    max="200"
+                    step="1"
+                    value="100"
+                  />
+                  <span class="range-unit">%</span>
+                </span>
+              </span>
             </label>
 
             <label class="range-row">
               <span>横向位置</span>
-              <input id="offset-x-range" type="range" min="-100" max="100" step="5" value="0" />
-              <strong id="offset-x-value">居中</strong>
+              <input id="offset-x-range" type="range" min="-100" max="100" step="1" value="0" />
+              <span class="range-value-stack">
+                <strong id="offset-x-value">居中</strong>
+                <span class="range-number-group">
+                  <input
+                    id="offset-x-input"
+                    class="range-number-input"
+                    type="number"
+                    min="-100"
+                    max="100"
+                    step="1"
+                    value="0"
+                  />
+                  <span class="range-unit">%</span>
+                </span>
+              </span>
             </label>
 
             <label class="range-row">
               <span>纵向位置</span>
-              <input id="offset-y-range" type="range" min="-100" max="100" step="5" value="0" />
-              <strong id="offset-y-value">居中</strong>
+              <input id="offset-y-range" type="range" min="-100" max="100" step="1" value="0" />
+              <span class="range-value-stack">
+                <strong id="offset-y-value">居中</strong>
+                <span class="range-number-group">
+                  <input
+                    id="offset-y-input"
+                    class="range-number-input"
+                    type="number"
+                    min="-100"
+                    max="100"
+                    step="1"
+                    value="0"
+                  />
+                  <span class="range-unit">%</span>
+                </span>
+              </span>
             </label>
 
             <div class="execution-box">
@@ -202,11 +244,23 @@
                   <small>适合白底、浅灰底、棋盘格假透明图。真正带透明通道的 PNG 不需要开启。</small>
                 </span>
               </label>
+
+              <label class="preview-select-card">
+                <span>辅助线</span>
+                <select id="preview-guide-select">
+                  <option value="none" selected>关闭</option>
+                  <option value="quad">田字</option>
+                  <option value="quarter">田字 + 4x4</option>
+                  <option value="eighth">4x4 + 16x16细分</option>
+                </select>
+                <small>只用于预览里辅助对齐，不影响最终生成。</small>
+              </label>
             </div>
 
             <div class="preview-frame">
-              <div class="preview-canvas">
+              <div id="preview-canvas" class="preview-canvas" data-guide="none">
                 <img id="preview-image" alt="生成预览" />
+                <div class="preview-guide" aria-hidden="true"></div>
                 <div class="empty-state" id="preview-empty">生成后这里会显示像素预览。</div>
               </div>
             </div>
