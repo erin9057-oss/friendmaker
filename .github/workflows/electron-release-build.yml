@@ -25,8 +25,12 @@ jobs:
             artifact: friend-maker-macos-x64
           - name: Windows x64
             os: windows-latest
-            script: npm run dist:win -- --x64
+            script: npm run dist:win:x64
             artifact: friend-maker-windows-x64
+          - name: Windows arm64
+            os: windows-11-arm
+            script: npm run dist:win:arm64
+            artifact: friend-maker-windows-arm64
 
     steps:
       - name: Checkout
