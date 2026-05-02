@@ -1844,12 +1844,7 @@ function syncWindowsSerialDriverUi() {
   const driverInstallStatus = state.windowsSerialDrivers.install?.status ?? "idle";
   const driverInstalling = driverInstallStatus === "running";
   const isWindows = state.windowsSerialDrivers.platform === "win32";
-  const mainlineEnvironmentSelected = state.firmware.environmentId === "esp32dev_wireless";
-  const shouldShowDriverPanel =
-    isWindows &&
-    mainlineEnvironmentSelected &&
-    state.firmwareTooling.available &&
-    state.ports.length === 0;
+  const shouldShowDriverPanel = isWindows;
   const cp210xDriver = getWindowsSerialDriver("cp210x");
   const ch341Driver = getWindowsSerialDriver("ch341");
 
@@ -1862,9 +1857,12 @@ function syncWindowsSerialDriverUi() {
   if (!state.windowsSerialDrivers.supported) {
     els.windowsDriverHint.textContent =
       state.windowsSerialDrivers.reason ?? "当前仅支持 Windows x64 的一键串口驱动安装。";
+  } else if (state.ports.length > 0) {
+    els.windowsDriverHint.textContent =
+      "如果当前开发板仍未识别，或更换板子后仍没有新的串口出现，可以重装 CP210x 驱动；如果仍无效果，再安装 CH340/CH341 驱动。";
   } else {
     els.windowsDriverHint.textContent =
-      "PlatformIO 已就绪但仍未检测到串口。请先确认使用可传输数据的 USB 线并重新插拔 ESP32；仍无串口时优先安装 CP210x 驱动，如果仍检测不到再安装 CH340/CH341 驱动。";
+      "如果还没有检测到串口，请先确认使用可传输数据的 USB 线并重新插拔 ESP32；仍无串口时优先安装 CP210x 驱动，如果仍检测不到再安装 CH340/CH341 驱动。";
   }
 
   els.installCp210xDriverButton.disabled =
