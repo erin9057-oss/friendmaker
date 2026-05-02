@@ -5,6 +5,13 @@
 UsbControllerTransport::UsbControllerTransport() : gamepad_() {}
 
 void UsbControllerTransport::begin() {
+  // 在启动 USB 前，强制把自己的身份证改成 Switch 官方授权的 HORI Pokken 手柄
+  USB.VID(0x0F0D);
+  USB.PID(0x0092);
+  USB.usbClass(0);
+  USB.usbSubClass(0);
+  USB.usbProtocol(0);
+
   gamepad_.begin();
   USB.begin(); 
 }
