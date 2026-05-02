@@ -1,8 +1,6 @@
 #pragma once
 
 #include "controller_transport.h"
-#include <USB.h>
-#include <USBHIDGamepad.h>
 
 class UsbControllerTransport : public ControllerTransport {
  public:
@@ -15,8 +13,5 @@ class UsbControllerTransport : public ControllerTransport {
   const char *name() const override;
 
  private:
-  USBHIDGamepad gamepad_;
-  
-  // 将自定义的按钮掩码映射到 USBHIDGamepad 库的按钮枚举
   void applyButtonsToGamepad(uint32_t buttonsMask);
 };
