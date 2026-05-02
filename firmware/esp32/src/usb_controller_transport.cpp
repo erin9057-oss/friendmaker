@@ -208,7 +208,14 @@ void UsbControllerTransport::printStatus(Print &output) const {
   output.print("INFO transport=");
   output.println(name());
   output.println("INFO bt_mode=usb_wired");
-  output.println("INFO connected=unknown");
+  output.println("INFO profile=usb_wired");
+  output.println("INFO discoverable=false");
+  output.println("INFO auth=true");
+  output.println("INFO connected=true");
+  output.println("INFO paired=true");
+  output.println("INFO ready=true");
+  output.println("INFO init_step=usb-wired-ready");
+  output.println("INFO init_error=");
   output.print("INFO usb_last_send_ok=");
   output.println(switchPad.lastSendOk() ? "true" : "false");
 }
