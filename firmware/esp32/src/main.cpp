@@ -1,7 +1,9 @@
 #include <Arduino.h>
 
 #include "config.h"
-#include "classic_bt_controller_transport.h"
+// 【修改点 1】将蓝牙传输层替换为即将创建的 USB 传输层
+// #include "classic_bt_controller_transport.h"
+#include "usb_controller_transport.h" 
 #include "controller.h"
 #include "protocol.h"
 
@@ -29,8 +31,11 @@ struct SequencedCommandCache {
 MockControllerTransport mockTransport;
 ControllerTransport &transport = mockTransport;
 #else
-ClassicBtControllerTransport classicBtTransport;
-ControllerTransport &transport = classicBtTransport;
+// 【修改点 2】实例化 USB 传输类并绑定到通用接口
+// ClassicBtControllerTransport classicBtTransport;
+// ControllerTransport &transport = classicBtTransport;
+UsbControllerTransport usbTransport;
+ControllerTransport &transport = usbTransport;
 #endif
 
 SwitchController controller(transport);
@@ -170,7 +175,6 @@ void cacheSequencedResult(const SequencedFrame &frame, const String &ackLine) {
 }
 
 }  // namespace
-
 void setup() {
   Serial.begin(SERIAL_BAUD_RATE);
   controller.begin();
