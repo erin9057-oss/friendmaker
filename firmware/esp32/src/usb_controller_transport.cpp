@@ -213,4 +213,4 @@ void UsbControllerTransport::printStatus(Print &output) const {
   output.println(switchPad.lastSendOk() ? "true" : "false");
 }
 
-const char *UsbControllerTransport::name() { return "usb_hid"; }
+const char *UsbControllerTransport::name() const { return "usb_hid"; }
