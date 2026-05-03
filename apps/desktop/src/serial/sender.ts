@@ -153,7 +153,7 @@ function waitForAck(
 function getAckTimeoutForCommand(command: string, baseTimeoutMs: number): number {
   const trimmed = command.trim();
   if (trimmed === "H") return Math.max(baseTimeoutMs, 6_000);
-  if (trimmed === "BT RESET") return Math.max(baseTimeoutMs, 20_000);
+  if (trimmed === "BT RESET") return Math.max(baseTimeoutMs, 30_000);
   if (trimmed.startsWith("M ")) {
     const match = /^M\s+(-?\d+)\s+(-?\d+)$/u.exec(trimmed);
     if (!match || match[1] === undefined || match[2] === undefined) return baseTimeoutMs;
@@ -165,7 +165,7 @@ function getAckTimeoutForCommand(command: string, baseTimeoutMs: number): number
   if (trimmed === "BC RESET") return Math.max(baseTimeoutMs, 4_000);
   if (trimmed.startsWith("C ")) return Math.max(baseTimeoutMs, 7_000);
   if (trimmed.startsWith("BC ")) return Math.max(baseTimeoutMs, 15_000);
-  if (trimmed.startsWith("PC ")) return Math.max(baseTimeoutMs, 20_000);
+  if (trimmed.startsWith("PC ")) return Math.max(baseTimeoutMs, 180_000);
   return baseTimeoutMs;
 }
 
@@ -261,6 +261,13 @@ export class SerialCommandSession {
     }
   }
 
+  private async forceReconnect(onDeviceLine?: (line: string) => void): Promise<void> {
+    await this.close();
+    this.sessionId = createSessionId();
+    this.sequence = 1;
+    await this.open(onDeviceLine);
+  }
+
   async close(): Promise<void> {
     this.interruptAckWait?.();
     this.interruptAckWait = null;
@@ -301,11 +308,20 @@ export class SerialCommandSession {
 
       let attempt = 0;
       let sent = false;
-      const commandSequence = this.sequence;
-      const framedCommand = formatSequencedCommand(this.sessionId, commandSequence, command);
 
       while (!sent) {
+        const commandSequence = this.sequence;
+        const framedCommand = formatSequencedCommand(this.sessionId, commandSequence, command);
+
         try {
+          if (!this.socket || !this.rl || this.socket.destroyed) {
+            await this.forceReconnect(options.onDeviceLine);
+          }
+
+          if (!this.socket || !this.rl) {
+            throw new Error("Wi-Fi session is not open.");
+          }
+
           await writeLine(this.socket, framedCommand);
           await waitForAck(
             this.rl,
@@ -323,9 +339,21 @@ export class SerialCommandSession {
           sent = true;
         } catch (error) {
           if (options.shouldStop?.()) throw new Error("Execution stopped.");
-          if (attempt >= options.retries) throw error;
+
           const message = error instanceof Error ? error.message : String(error);
+          const socketBroken =
+            this.socket?.destroyed === true ||
+            /ECONNRESET|EPIPE|Socket closed|Socket destroyed|stream was destroyed/i.test(message);
+
+          if (attempt >= options.retries) throw error;
+
           options.onDeviceLine?.(`WARN retry command=${index + 1} attempt=${attempt + 1} reason=${message}`);
+
+          if (socketBroken) {
+            options.onDeviceLine?.("WARN wifi_session=reconnect reason=socket-broken");
+            await this.forceReconnect(options.onDeviceLine);
+          }
+
           attempt += 1;
         }
       }

@@ -154,6 +154,9 @@ void loop() {
       delay(10);
       return;
     }
+
+    client.setTimeout(180000);
+    client.setNoDelay(true);
   }
 
   // 读取手机发来的指令
