@@ -1883,7 +1883,7 @@ function syncStudioUi() {
   const templateHint =
     state.studio.templateId === "none"
       ? "当前使用正方形画布，不会额外裁掉模板外区域。"
-      : `当前模板是“${state.studio.templateLabel}”，模板外区域不会显示，也不会生成绘制命令。`;
+      : `当前模板是“${state.studio.templateLabel}”，纯模板外区域不会显示；边缘格子只要碰到模板，也会保留绘制来填满可见边缘。`;
   const scaleHint = `当前导入缩放是 ${state.studio.imageScalePercent}%，100% 表示完整放进画布。`;
   const positionHint = describeImagePosition(
     state.studio.imageOffsetXPercent,

@@ -1,7 +1,10 @@
 import type { BrushGrid } from "../brushGrid.js";
 import type { DrawingMask, RawImageData } from "../types.js";
 
-export const MIN_DRAWING_MASK_CELL_COVERAGE = 0.5;
+// Irregular templates only describe the visible cutout. The real drawing still
+// happens on the underlying square board, so any overlap should stay drawable
+// to keep visible edges fully filled when using a large brush.
+export const MIN_DRAWING_MASK_CELL_COVERAGE = 0;
 
 export type DrawingMaskCoverageMap = number[][];
 
@@ -94,5 +97,5 @@ export function isDrawingMaskCellEnabled(
     return true;
   }
 
-  return (coverageMap[point.y]?.[point.x] ?? 0) >= MIN_DRAWING_MASK_CELL_COVERAGE;
+  return (coverageMap[point.y]?.[point.x] ?? 0) > MIN_DRAWING_MASK_CELL_COVERAGE;
 }

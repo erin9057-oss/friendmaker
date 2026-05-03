@@ -249,7 +249,7 @@ test("drawing mask clears pixels outside the template and bounds follow the mask
   });
 });
 
-test("large brush cells require at least half mask coverage to stay drawable", async () => {
+test("large brush cells stay drawable when they overlap the template edge", async () => {
   const profile = makeProfile({ canvasWidth: 6, canvasHeight: 6, brushSize: 3 });
   const source = await solidPng(6, 6);
   const drawingMask = makeDrawingMask(6, 6, (x, y) => {
@@ -270,10 +270,12 @@ test("large brush cells require at least half mask coverage to stay drawable", a
   assert.equal(coverageMap?.[0]?.[0], 6 / 9);
   assert.equal(coverageMap?.[0]?.[1], 3 / 9);
   assert.equal(pixelized.pixelMap[0]?.[0]?.alpha, 255);
-  assert.equal(pixelized.pixelMap[0]?.[1]?.alpha, 0);
+  assert.equal(pixelized.pixelMap[0]?.[1]?.alpha, 255);
+  assert.equal(pixelized.pixelMap[1]?.[0]?.alpha, 0);
+  assert.equal(pixelized.pixelMap[1]?.[1]?.alpha, 0);
   assert.equal(
     pixelized.pixelMap.flatMap((row) => row).filter((pixel) => pixel.alpha > 0 && pixel.colorIndex >= 0).length,
-    1,
+    2,
   );
 });
 
