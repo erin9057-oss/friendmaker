@@ -79,7 +79,7 @@ const state = {
     },
     profile: {
       baudRate: 115200,
-      ackTimeoutMs: 5000,
+      ackTimeoutMs: 120000,
       commandRetryCount: 1,
       templateId: "none",
       templateLabel: "无模板（正方形）",
@@ -788,7 +788,7 @@ function applyGeneratedStudioPayload(payload) {
     : [];
   state.studio.profile = {
     baudRate: payload.profile.baudRate ?? 115200,
-    ackTimeoutMs: payload.profile.ackTimeoutMs ?? 5000,
+    ackTimeoutMs: payload.profile.ackTimeoutMs ?? 120000,
     commandRetryCount: payload.profile.commandRetryCount ?? 1,
     templateId: payload.profile.templateId ?? state.studio.templateId,
     templateLabel: payload.profile.templateLabel ?? state.studio.templateLabel,
@@ -2451,7 +2451,8 @@ function syncControllerUi() {
     button.disabled = !canSendTestCommands;
   });
   renderSerialSessionStatus();
-}
+
+  forceUsbWifiControllerTestReady();}
 
 async function runExecution({
   commands,
@@ -3079,3 +3080,43 @@ async function init() {
 }
 
 void init();
+
+
+/* USB/Wi-Fi controller test fallback.
+   The ESP32-S3 USB route does not expose the same Bluetooth-ready status as upstream,
+   so controller test buttons should be enabled whenever a serial/TCP bridge path exists. */
+function forceUsbWifiControllerTestReady() {
+  const hasPath = Boolean(state.selectedPortPath);
+
+  if (els.controllerInfoButton) {
+    els.controllerInfoButton.disabled = !hasPath || state.controller.busy;
+  }
+
+  if (els.controllerResetButton) {
+    els.controllerResetButton.disabled = !hasPath || state.controller.busy;
+  }
+
+  if (els.controllerSendCustomButton) {
+    els.controllerSendCustomButton.disabled = !hasPath || state.controller.busy;
+  }
+
+  if (Array.isArray(els.controllerActionButtons)) {
+    els.controllerActionButtons.forEach((button) => {
+      button.disabled = !hasPath || state.controller.busy;
+    });
+  }
+
+  if (hasPath && state.controller.status.readyValue !== true) {
+    state.controller.status.connectedValue = true;
+    state.controller.status.pairedValue = true;
+    state.controller.status.readyValue = true;
+    state.controller.status.connected = "已连接";
+    state.controller.status.paired = "已配对";
+    state.controller.status.ready = "可发送";
+    state.controller.status.pill = "USB/Wi-Fi 已就绪";
+    state.controller.status.title = "USB/Wi-Fi 手柄链路已就绪";
+    state.controller.status.detail = "当前使用 ESP32-S3 USB 手柄 + Wi-Fi/串口桥接模式，前端不再等待蓝牙 ready 状态。";
+    state.controller.status.tone = "success";
+  }
+}
+

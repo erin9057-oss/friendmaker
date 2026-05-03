@@ -594,7 +594,7 @@ async function executeCommands(body: {
   }
 
   const target = body.target === "serial" ? "serial" : "simulate";
-  const ackTimeoutMs = body.ackTimeoutMs ?? 5_000;
+  const ackTimeoutMs = body.ackTimeoutMs ?? 120_000;
   const retries = body.retries ?? 1;
   const lines: string[] = [`INFO target=${target} commands=${body.commands.length}`];
 
@@ -656,7 +656,7 @@ async function runManagedExecution(
     errorAtCommand?: number;
   },
 ): Promise<void> {
-  const ackTimeoutMs = body.ackTimeoutMs ?? 5_000;
+  const ackTimeoutMs = body.ackTimeoutMs ?? 120_000;
   const retries = body.retries ?? 1;
 
   appendManagedExecutionLine(

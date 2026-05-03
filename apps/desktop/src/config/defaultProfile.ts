@@ -97,7 +97,7 @@ export const DEFAULT_PROFILE: DrawingProfile = {
   homeDuration: 1800,
   buttonPressDuration: 100,
   colorChangeDuration: 450,
-  ackTimeoutMs: 2_000,
+  ackTimeoutMs: 120_000,
   commandRetryCount: 1,
   drawButton: "A",
   colorMode: "mono",
