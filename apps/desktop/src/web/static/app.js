@@ -702,11 +702,13 @@ async function executeStudioCommands({ logPrefix }) {
     return false;
   }
 
-  if (!isControllerReadyForStudio()) {
-    appendLog(els.studioLogOutput, "开始绘制前，请先到“手柄测试”页把手柄连接状态跑到“已就绪”。");
-    switchPage("controller");
-    return false;
-  }
+  // USB wired mode: ESP32-S3 can already control Switch through USB.
+// Do not block drawing on the old Bluetooth-ready state.
+if (false && !isControllerReadyForStudio()) {
+  appendLog(els.studioLogOutput, "开始绘制前，请先到“手柄测试”页把手柄连接状态跑到“已就绪”。");
+  switchPage("controller");
+  return false;
+}
 
   appendLog(els.studioLogOutput, logPrefix);
 
@@ -1554,7 +1556,7 @@ function updateControllerStatusFromLines(lines) {
 }
 
 function isControllerReadyForStudio() {
-  return state.controller.status.readyValue === true;
+  return Boolean(state.selectedPortPath);
 }
 
 function renderStudioConnectionStatus() {
