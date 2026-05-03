@@ -1,5 +1,5 @@
-import { ReadlineParser } from "@serialport/parser-readline";
-import { SerialPort } from "serialport";
+import net from "node:net";
+import { createInterface, type Interface } from "node:readline";
 
 import { preferSerialPath } from "./listPorts.js";
 import {
@@ -36,7 +36,6 @@ function isRecognizedDeviceLine(line: string): boolean {
   if (line === "OK" || line === "ERR" || ACK_LINE_PREFIXES.some((prefix) => line.startsWith(prefix))) {
     return true;
   }
-
   return DEVICE_LINE_PREFIXES.some((prefix) => line.startsWith(prefix));
 }
 
@@ -47,22 +46,14 @@ function sanitizeDeviceLine(rawLine: string | Buffer): string | null {
     .replace(/\r/g, "")
     .trim();
 
-  if (cleanText.length === 0) {
-    return null;
-  }
-
-  if (isRecognizedDeviceLine(cleanText)) {
-    return cleanText;
-  }
+  if (cleanText.length === 0) return null;
+  if (isRecognizedDeviceLine(cleanText)) return cleanText;
 
   const candidateIndexes = [...ACK_LINE_PREFIXES, ...DEVICE_LINE_PREFIXES]
     .map((prefix) => cleanText.lastIndexOf(prefix))
     .filter((index) => index >= 0);
 
-  if (candidateIndexes.length === 0) {
-    return null;
-  }
-
+  if (candidateIndexes.length === 0) return null;
   const candidate = cleanText.slice(Math.max(...candidateIndexes)).trim();
   return isRecognizedDeviceLine(candidate) ? candidate : null;
 }
@@ -71,41 +62,31 @@ function getEmbeddedDeviceLine(line: string): string | null {
   const candidateIndexes = DEVICE_LINE_PREFIXES.map((prefix) => line.indexOf(prefix)).filter(
     (index) => index > 0,
   );
-
-  if (candidateIndexes.length === 0) {
-    return null;
-  }
-
+  if (candidateIndexes.length === 0) return null;
   const candidate = line.slice(Math.min(...candidateIndexes)).trim();
   return DEVICE_LINE_PREFIXES.some((prefix) => candidate.startsWith(prefix)) ? candidate : null;
 }
 
 function waitForAck(
-  parser: ReadlineParser,
-  port: SerialPort,
+  rl: Interface,
+  socket: net.Socket,
   timeoutMs: number,
-  expected: {
-    sessionId: string;
-    sequence: number;
-  },
+  expected: { sessionId: string; sequence: number },
   options?: {
     onDeviceLine?: (line: string) => void;
     onInterruptReady?: (interrupt: (() => void) | null) => void;
   },
 ): Promise<"OK"> {
   return new Promise((resolve, reject) => {
-    if (!port.isOpen) {
-      reject(new Error("Execution stopped."));
+    if (socket.destroyed) {
+      reject(new Error("Execution stopped. Socket destroyed."));
       return;
     }
 
     let settled = false;
 
     const finish = (callback: () => void) => {
-      if (settled) {
-        return;
-      }
-
+      if (settled) return;
       settled = true;
       cleanup();
       callback();
@@ -115,20 +96,15 @@ function waitForAck(
       finish(() => reject(new Error(`Timed out waiting for ACK after ${timeoutMs}ms.`)));
     }, timeoutMs);
 
-    const onData = (rawLine: string | Buffer) => {
+    const onLine = (rawLine: string) => {
       const line = sanitizeDeviceLine(rawLine);
-
-      if (!line) {
-        return;
-      }
+      if (!line) return;
 
       const ack = parseSequencedAck(line);
 
       if (ack) {
         if (ack.sessionId !== expected.sessionId || ack.sequence !== expected.sequence) {
-          options?.onDeviceLine?.(
-            `WARN ignored ack session=${ack.sessionId} seq=${ack.sequence} expected=${expected.sessionId}:${expected.sequence}`,
-          );
+          options?.onDeviceLine?.(`WARN ignored ack session=${ack.sessionId} seq=${ack.sequence} expected=${expected.sessionId}:${expected.sequence}`);
           return;
         }
 
@@ -143,174 +119,61 @@ function waitForAck(
 
       if (line === "OK" || line === "ERR" || line.startsWith("OK ") || line.startsWith("ERR ")) {
         const embeddedDeviceLine = getEmbeddedDeviceLine(line);
-
         if (embeddedDeviceLine) {
           options?.onDeviceLine?.(`WARN ignored malformed serial line=${line}`);
           options?.onDeviceLine?.(embeddedDeviceLine);
           return;
         }
-
-        finish(() =>
-          reject(
-            new Error(
-              `Device returned an unsequenced or malformed ACK: ${line}. Reflash the ESP32 firmware for the SEQ protocol.`,
-            ),
-          ),
-        );
+        finish(() => reject(new Error(`Device returned an unsequenced or malformed ACK: ${line}.`)));
         return;
       }
 
       options?.onDeviceLine?.(line);
     };
 
-    const onClose = () => {
-      finish(() => reject(new Error("Execution stopped.")));
-    };
-
-    const onError = (error: Error) => {
-      finish(() => reject(error));
-    };
-
-    const onInterrupt = () => {
-      finish(() => reject(new Error("Execution stopped.")));
-    };
+    const onClose = () => finish(() => reject(new Error("Execution stopped. Socket closed.")));
+    const onError = (error: Error) => finish(() => reject(error));
+    const onInterrupt = () => finish(() => reject(new Error("Execution stopped via interrupt.")));
 
     const cleanup = () => {
       clearTimeout(timeoutId);
-      parser.off("data", onData);
-      port.off("close", onClose);
-      port.off("error", onError);
+      rl.off("line", onLine);
+      socket.off("close", onClose);
+      socket.off("error", onError);
       options?.onInterruptReady?.(null);
     };
 
     options?.onInterruptReady?.(onInterrupt);
-    parser.on("data", onData);
-    port.on("close", onClose);
-    port.on("error", onError);
+    rl.on("line", onLine);
+    socket.on("close", onClose);
+    socket.on("error", onError);
   });
 }
 
 function getAckTimeoutForCommand(command: string, baseTimeoutMs: number): number {
   const trimmed = command.trim();
-
-  if (trimmed === "H") {
-    return Math.max(baseTimeoutMs, 6_000);
-  }
-
-  if (trimmed === "BT RESET") {
-    return Math.max(baseTimeoutMs, 20_000);
-  }
-
+  if (trimmed === "H") return Math.max(baseTimeoutMs, 6_000);
+  if (trimmed === "BT RESET") return Math.max(baseTimeoutMs, 20_000);
   if (trimmed.startsWith("M ")) {
     const match = /^M\s+(-?\d+)\s+(-?\d+)$/u.exec(trimmed);
-
-    if (!match || match[1] === undefined || match[2] === undefined) {
-      return baseTimeoutMs;
-    }
-
+    if (!match || match[1] === undefined || match[2] === undefined) return baseTimeoutMs;
     const dx = Number.parseInt(match[1], 10);
     const dy = Number.parseInt(match[2], 10);
     const steps = Math.abs(dx) + Math.abs(dy);
-
-    // Each move step becomes one D-pad press on the ESP32 side. Give the board
-    // enough room to finish long center-to-target moves before we expect `OK`.
     return Math.max(baseTimeoutMs, 1_500 + steps * 150);
   }
-
-  if (trimmed === "BC RESET") {
-    return Math.max(baseTimeoutMs, 4_000);
-  }
-
-  if (trimmed.startsWith("C ")) {
-    // Palette slot switching walks through the in-game color menu before
-    // returning to the canvas, so it needs substantially more time than a
-    // simple button press.
-    return Math.max(baseTimeoutMs, 7_000);
-  }
-
-  if (trimmed.startsWith("BC ")) {
-    // Official/basic color configuration traverses multiple menu layers and a
-    // wrapped 7x12 grid before returning to the canvas.
-    return Math.max(baseTimeoutMs, 15_000);
-  }
-
-  if (trimmed.startsWith("PC ")) {
-    return Math.max(baseTimeoutMs, 20_000);
-  }
-
+  if (trimmed === "BC RESET") return Math.max(baseTimeoutMs, 4_000);
+  if (trimmed.startsWith("C ")) return Math.max(baseTimeoutMs, 7_000);
+  if (trimmed.startsWith("BC ")) return Math.max(baseTimeoutMs, 15_000);
+  if (trimmed.startsWith("PC ")) return Math.max(baseTimeoutMs, 20_000);
   return baseTimeoutMs;
 }
 
-function writeLine(port: SerialPort, line: string): Promise<void> {
+function writeLine(socket: net.Socket, line: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    port.write(`${line}\n`, (error) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-
-      port.drain((drainError) => {
-        if (drainError) {
-          reject(drainError);
-          return;
-        }
-
-        resolve();
-      });
-    });
-  });
-}
-
-function openPort(port: SerialPort): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (port.isOpen) {
-      resolve();
-      return;
-    }
-
-    port.open((error) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-
-      resolve();
-    });
-  });
-}
-
-function flushPort(port: SerialPort): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (!port.isOpen) {
-      resolve();
-      return;
-    }
-
-    port.flush((error) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-
-      resolve();
-    });
-  });
-}
-
-function closePort(port: SerialPort): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (!port.isOpen) {
-      resolve();
-      return;
-    }
-
-    port.close((error) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-
-      resolve();
+    socket.write(`${line}\n`, (error) => {
+      if (error) reject(error);
+      else resolve();
     });
   });
 }
@@ -318,25 +181,22 @@ function closePort(port: SerialPort): Promise<void> {
 export class SerialCommandSession {
   readonly portPath: string;
   readonly baudRate: number;
-
-  private port: SerialPort | null = null;
-  private parser: ReadlineParser | null = null;
+  private socket: net.Socket | null = null;
+  private rl: Interface | null = null;
   private sessionId = createSessionId();
   private sequence = 1;
   private interruptAckWait: (() => void) | null = null;
   private lastUsedAtValue: number | null = null;
   private openingPromise: Promise<void> | null = null;
   private closingPromise: Promise<void> | null = null;
-  private portErrorHandler: ((error: Error) => void) | null = null;
-  private portCloseHandler: (() => void) | null = null;
 
   constructor(path: string, baudRate: number) {
-    this.portPath = preferSerialPath(path);
+    this.portPath = path.trim();
     this.baudRate = baudRate;
   }
 
   get isConnected(): boolean {
-    return this.port?.isOpen === true;
+    return this.socket !== null && !this.socket.destroyed;
   }
 
   get lastUsedAt(): number | null {
@@ -344,7 +204,7 @@ export class SerialCommandSession {
   }
 
   async open(onDeviceLine?: (line: string) => void): Promise<void> {
-    if (this.port?.isOpen && this.parser) {
+    if (this.socket && !this.socket.destroyed && this.rl) {
       return;
     }
 
@@ -353,53 +213,51 @@ export class SerialCommandSession {
       return;
     }
 
-    const port = new SerialPort({
-      path: this.portPath,
-      baudRate: this.baudRate,
-      autoOpen: false,
-      hupcl: false,
+    const socket = new net.Socket();
+    this.socket = socket;
+
+    this.openingPromise = new Promise((resolve, reject) => {
+      socket.setTimeout(5000);
+      
+      socket.connect(8080, this.portPath, () => {
+        socket.setTimeout(0);
+        this.rl = createInterface({ input: socket, crlfDelay: Infinity });
+        
+        // 【防崩溃气囊 1】：拦截 readline 抛出的所有错误，不让进程死掉
+        this.rl.on('error', (err) => {
+          onDeviceLine?.(`WARN Readline error: ${err.message}`);
+        });
+
+        this.lastUsedAtValue = Date.now();
+        onDeviceLine?.(`INFO wifi_session=open ip=${this.portPath}:8080`);
+        resolve();
+      });
+
+      // 【防崩溃气囊 2】：妥善处理底层 Socket 断连，确保 Promise 被正确拒绝或忽略
+      socket.on('error', (err) => {
+        if (this.openingPromise) {
+          reject(new Error(`Wi-Fi Connection failed: ${err.message}`));
+        } else {
+          onDeviceLine?.(`WARN Socket error ignored: ${err.message}`);
+        }
+      });
+      
+      socket.on('timeout', () => {
+        socket.destroy();
+        if (this.openingPromise) {
+          reject(new Error('Wi-Fi Connection timeout.'));
+        }
+      });
     });
-    this.port = port;
-    this.attachPortLifecycleHandlers(port);
-
-    const openingPromise = (async () => {
-      await openPort(port);
-
-      if (this.port !== port || !port.isOpen) {
-        throw new Error("Serial session is not open.");
-      }
-
-      try {
-        await flushPort(port);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        onDeviceLine?.(`WARN serial_flush_failed reason=${message}`);
-      }
-
-      if (this.port !== port || !port.isOpen) {
-        throw new Error("Serial session is not open.");
-      }
-
-      this.parser = port.pipe(new ReadlineParser({ delimiter: "\n" }));
-      this.lastUsedAtValue = Date.now();
-      onDeviceLine?.(`INFO serial_session=open port=${this.portPath} baud=${this.baudRate}`);
-    })();
-    this.openingPromise = openingPromise;
 
     try {
-      await openingPromise;
+      await this.openingPromise;
     } catch (error) {
-      if (this.port === port) {
-        this.port = null;
-        this.parser = null;
-      }
-
-      this.detachPortLifecycleHandlers(port);
+      this.socket = null;
+      this.rl = null;
       throw error;
     } finally {
-      if (this.openingPromise === openingPromise) {
-        this.openingPromise = null;
-      }
+      this.openingPromise = null;
     }
   }
 
@@ -407,99 +265,39 @@ export class SerialCommandSession {
     this.interruptAckWait?.();
     this.interruptAckWait = null;
 
-    const port = this.port;
-
-    if (!port) {
-      return;
-    }
+    if (!this.socket) return;
 
     if (this.closingPromise) {
       await this.closingPromise;
       return;
     }
 
-    const openingPromise = this.openingPromise;
-    this.closingPromise = (async () => {
-      try {
-        try {
-          await openingPromise;
-        } catch {
-          // Opening failed, so there is no open descriptor left to close.
-        }
-
-        if (port.isOpen) {
-          await closePort(port);
-        }
-      } finally {
-        this.detachPortLifecycleHandlers(port);
-
-        if (this.port === port) {
-          this.port = null;
-          this.parser = null;
-        }
-
-        if (this.openingPromise === openingPromise) {
-          this.openingPromise = null;
-        }
-
-        this.closingPromise = null;
+    this.closingPromise = new Promise((resolve) => {
+      if (this.socket && !this.socket.destroyed) {
+        this.socket.destroy();
       }
-    })();
+      this.socket = null;
+      if (this.rl) {
+        this.rl.close();
+        this.rl = null;
+      }
+      resolve();
+    });
 
     await this.closingPromise;
-  }
-
-  private attachPortLifecycleHandlers(port: SerialPort): void {
-    this.portErrorHandler = () => {
-      // Persistent sessions can be idle when a USB device is unplugged. Keep
-      // those EventEmitter errors handled, then invalidate the session.
-      queueMicrotask(() => {
-        if (this.port === port) {
-          void this.close().catch(() => {
-            // The error event already tells us this descriptor is not healthy.
-          });
-        }
-      });
-    };
-    this.portCloseHandler = () => {
-      if (this.port === port) {
-        this.port = null;
-        this.parser = null;
-        this.openingPromise = null;
-      }
-
-      this.detachPortLifecycleHandlers(port);
-    };
-
-    port.on("error", this.portErrorHandler);
-    port.on("close", this.portCloseHandler);
-  }
-
-  private detachPortLifecycleHandlers(port: SerialPort): void {
-    if (this.portErrorHandler) {
-      port.off("error", this.portErrorHandler);
-      this.portErrorHandler = null;
-    }
-
-    if (this.portCloseHandler) {
-      port.off("close", this.portCloseHandler);
-      this.portCloseHandler = null;
-    }
+    this.closingPromise = null;
   }
 
   async send(commands: string[], options: SerialCommandSendOptions): Promise<void> {
     await this.open(options.onDeviceLine);
 
-    if (!this.port || !this.parser) {
-      throw new Error("Serial session is not open.");
+    if (!this.socket || !this.rl) {
+      throw new Error("Wi-Fi session is not open.");
     }
 
     for (const [index, command] of commands.entries()) {
       await options.beforeCommand?.();
-
-      if (options.shouldStop?.()) {
-        break;
-      }
+      if (options.shouldStop?.()) break;
 
       let attempt = 0;
       let sent = false;
@@ -508,15 +306,12 @@ export class SerialCommandSession {
 
       while (!sent) {
         try {
-          await writeLine(this.port, framedCommand);
+          await writeLine(this.socket, framedCommand);
           await waitForAck(
-            this.parser,
-            this.port,
+            this.rl,
+            this.socket,
             getAckTimeoutForCommand(command, options.ackTimeoutMs),
-            {
-              sessionId: this.sessionId,
-              sequence: commandSequence,
-            },
+            { sessionId: this.sessionId, sequence: commandSequence },
             {
               ...(options.onDeviceLine ? { onDeviceLine: options.onDeviceLine } : {}),
               onInterruptReady: (interrupt) => {
@@ -527,27 +322,15 @@ export class SerialCommandSession {
           );
           sent = true;
         } catch (error) {
-          if (options.shouldStop?.()) {
-            throw new Error("Execution stopped.");
-          }
-
-          if (attempt >= options.retries) {
-            throw error;
-          }
-
+          if (options.shouldStop?.()) throw new Error("Execution stopped.");
+          if (attempt >= options.retries) throw error;
           const message = error instanceof Error ? error.message : String(error);
-          options.onDeviceLine?.(
-            `WARN retry command=${index + 1} attempt=${attempt + 1} reason=${message}`,
-          );
+          options.onDeviceLine?.(`WARN retry command=${index + 1} attempt=${attempt + 1} reason=${message}`);
           attempt += 1;
         }
       }
 
-      options.onProgress?.({
-        index: index + 1,
-        total: commands.length,
-        command,
-      });
+      options.onProgress?.({ index: index + 1, total: commands.length, command });
       this.sequence += 1;
       this.lastUsedAtValue = Date.now();
     }
@@ -573,16 +356,9 @@ export class SerialSessionManager {
     };
   }
 
-  async send(
-    commands: string[],
-    options: {
-      path: string;
-      baudRate: number;
-    } & SerialCommandSendOptions,
-  ): Promise<void> {
+  async send(commands: string[], options: { path: string; baudRate: number } & SerialCommandSendOptions): Promise<void> {
     this.pendingOperations += 1;
     this.clearIdleTimer();
-
     const queuedSend = this.queue.then(async () => {
       try {
         const session = await this.getSession(options.path, options.baudRate, options.onDeviceLine);
@@ -592,49 +368,31 @@ export class SerialSessionManager {
         throw error;
       }
     });
-
     this.queue = queuedSend.catch(() => undefined);
-
     try {
       await queuedSend;
     } finally {
       this.pendingOperations -= 1;
-      if (this.pendingOperations === 0) {
-        this.scheduleIdleClose();
-      }
+      if (this.pendingOperations === 0) this.scheduleIdleClose();
     }
   }
 
   async disconnect(options: { force?: boolean } = {}): Promise<SerialSessionSnapshot> {
-    if (this.pendingOperations > 0 && options.force !== true) {
-      throw new Error("Serial session is busy.");
-    }
-
+    if (this.pendingOperations > 0 && options.force !== true) throw new Error("Wi-Fi session is busy.");
     this.clearIdleTimer();
     await this.closeCurrentSession();
     return this.snapshot();
   }
 
-  private async getSession(
-    path: string,
-    baudRate: number,
-    onDeviceLine?: (line: string) => void,
-  ): Promise<SerialCommandSession> {
-    const preferredPath = preferSerialPath(path);
-
-    if (
-      !this.session ||
-      !this.session.isConnected ||
-      this.session.portPath !== preferredPath ||
-      this.session.baudRate !== baudRate
-    ) {
+  private async getSession(path: string, baudRate: number, onDeviceLine?: (line: string) => void): Promise<SerialCommandSession> {
+    const preferredPath = path.trim(); 
+    if (!this.session || !this.session.isConnected || this.session.portPath !== preferredPath || this.session.baudRate !== baudRate) {
       await this.closeCurrentSession();
       this.session = new SerialCommandSession(preferredPath, baudRate);
-      onDeviceLine?.(`INFO serial_session=create port=${preferredPath} baud=${baudRate}`);
+      onDeviceLine?.(`INFO wifi_session=create ip=${preferredPath}`);
     } else {
-      onDeviceLine?.(`INFO serial_session=reuse port=${preferredPath} baud=${baudRate}`);
+      onDeviceLine?.(`INFO wifi_session=reuse ip=${preferredPath}`);
     }
-
     return this.session;
   }
 
@@ -645,20 +403,12 @@ export class SerialSessionManager {
   }
 
   private scheduleIdleClose(): void {
-    if (!this.session?.isConnected) {
-      return;
-    }
-
-    this.idleTimer = setTimeout(() => {
-      void this.disconnect({ force: true });
-    }, this.idleTimeoutMs);
+    if (!this.session?.isConnected) return;
+    this.idleTimer = setTimeout(() => { void this.disconnect({ force: true }); }, this.idleTimeoutMs);
   }
 
   private clearIdleTimer(): void {
-    if (!this.idleTimer) {
-      return;
-    }
-
+    if (!this.idleTimer) return;
     clearTimeout(this.idleTimer);
     this.idleTimer = null;
   }
@@ -670,49 +420,24 @@ export class SerialAckSender implements SenderControls {
   private activeSession: SerialCommandSession | null = null;
   private interruptAckWait: (() => void) | null = null;
 
-  pause(): void {
-    this.paused = true;
-  }
-
-  resume(): void {
-    this.paused = false;
-  }
-
+  pause(): void { this.paused = true; }
+  resume(): void { this.paused = false; }
   stop(): void {
     this.stopped = true;
     this.interruptAckWait?.();
     this.interruptAckWait = null;
-
-    void this.activeSession?.close().catch(() => {
-      // Intentionally ignored: closing the session here is only used to break
-      // a blocking ACK wait so the execution can transition out of
-      // `stopping` immediately.
-    });
+    void this.activeSession?.close().catch(() => {});
   }
 
   private async waitWhilePaused(): Promise<void> {
-    while (this.paused && !this.stopped) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
+    while (this.paused && !this.stopped) await new Promise((resolve) => setTimeout(resolve, 50));
   }
 
-  async send(
-    commands: string[],
-    options: {
-      path: string;
-      baudRate: number;
-      ackTimeoutMs: number;
-      retries: number;
-      onProgress?: (progress: ProgressUpdate) => void;
-      onDeviceLine?: (line: string) => void;
-    },
-  ): Promise<void> {
+  async send(commands: string[], options: { path: string; baudRate: number; ackTimeoutMs: number; retries: number; onProgress?: (progress: ProgressUpdate) => void; onDeviceLine?: (line: string) => void }): Promise<void> {
     this.paused = false;
     this.stopped = false;
-
     const session = new SerialCommandSession(options.path, options.baudRate);
     this.activeSession = session;
-
     try {
       await session.send(commands, {
         ackTimeoutMs: options.ackTimeoutMs,
@@ -721,9 +446,7 @@ export class SerialAckSender implements SenderControls {
         ...(options.onDeviceLine ? { onDeviceLine: options.onDeviceLine } : {}),
         beforeCommand: () => this.waitWhilePaused(),
         shouldStop: () => this.stopped,
-        onInterruptReady: (interrupt) => {
-          this.interruptAckWait = interrupt;
-        },
+        onInterruptReady: (interrupt) => { this.interruptAckWait = interrupt; },
       });
     } finally {
       this.interruptAckWait = null;
