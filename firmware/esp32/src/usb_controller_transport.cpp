@@ -169,18 +169,19 @@ void UsbControllerTransport::applyButtonsToGamepad(uint32_t buttonsMask) {
   switchPad.setHat(hat);
 }
 
-void UsbControllerTransport::pressButtons(
+bool UsbControllerTransport::pressButtons(
     uint32_t buttonsMask, uint16_t holdMs, uint16_t settleMs) {
   applyButtonsToGamepad(buttonsMask);
-  switchPad.sendReport();
+  const bool pressOk = switchPad.sendReport();
   delay(holdMs);
 
   switchPad.resetReport();
-  switchPad.sendReport();
+  const bool releaseOk = switchPad.sendReport();
   delay(settleMs);
+  return pressOk && releaseOk;
 }
 
-void UsbControllerTransport::moveDirection(
+bool UsbControllerTransport::moveDirection(
     int x, int y, uint16_t holdMs, uint16_t settleMs) {
   switchPad.resetReport();
 
@@ -194,12 +195,13 @@ void UsbControllerTransport::moveDirection(
   else if (y > 0) ly = 255;
 
   switchPad.setAxes(lx, ly);
-  switchPad.sendReport();
+  const bool moveOk = switchPad.sendReport();
   delay(holdMs);
 
   switchPad.resetReport();
-  switchPad.sendReport();
+  const bool releaseOk = switchPad.sendReport();
   delay(settleMs);
+  return moveOk && releaseOk;
 }
 
 bool UsbControllerTransport::resetConnection() { return true; }
