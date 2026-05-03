@@ -1,5 +1,12 @@
-import type { DrawingProfile, PixelizationResult } from "../types.js";
+import type { DrawingMask, DrawingProfile, PixelizationResult } from "../types.js";
+import { createBrushGrid } from "../brushGrid.js";
 import type { ImageSource } from "./loadImage.js";
+import {
+  applyDrawingMask,
+  createDrawingMaskCoverageMap,
+  isDrawingMaskCellEnabled,
+  type DrawingMaskCoverageMap,
+} from "./drawingMask.js";
 import { autoRemoveBackground } from "./removeBackground.js";
 import { resizeImage } from "./resizeImage.js";
 import { quantizePixels } from "./quantize.js";
@@ -7,23 +14,28 @@ import { quantizePixels } from "./quantize.js";
 function collapsePixelMapForBrush(
   pixelMap: PixelizationResult["pixelMap"],
   profile: DrawingProfile,
+  drawingMaskCoverageMap: DrawingMaskCoverageMap | null,
 ): PixelizationResult["pixelMap"] {
-  const brushSize = Math.max(1, profile.brushSize);
-
-  if (brushSize === 1) {
-    return pixelMap;
-  }
-
-  const logicalWidth = Math.max(1, Math.ceil(profile.canvasWidth / brushSize));
-  const logicalHeight = Math.max(1, Math.ceil(profile.canvasHeight / brushSize));
+  const grid = createBrushGrid(profile);
   const collapsed: PixelizationResult["pixelMap"] = [];
 
-  for (let logicalY = 0; logicalY < logicalHeight; logicalY += 1) {
+  for (let logicalY = 0; logicalY < grid.gridHeight; logicalY += 1) {
     const row = [];
-    const originY = logicalY * brushSize;
+    const originY = grid.originY + logicalY * grid.brushSize;
 
-    for (let logicalX = 0; logicalX < logicalWidth; logicalX += 1) {
-      const originX = logicalX * brushSize;
+    for (let logicalX = 0; logicalX < grid.gridWidth; logicalX += 1) {
+      if (!isDrawingMaskCellEnabled(drawingMaskCoverageMap, { x: logicalX, y: logicalY })) {
+        row.push({
+          x: logicalX,
+          y: logicalY,
+          colorIndex: -1,
+          colorHex: "#ffffff",
+          alpha: 0,
+        });
+        continue;
+      }
+
+      const originX = grid.originX + logicalX * grid.brushSize;
       const colorCounts = new Map<
         number,
         {
@@ -39,7 +51,7 @@ function collapsePixelMapForBrush(
           }
         | null = null;
 
-      for (let dy = 0; dy < brushSize; dy += 1) {
+      for (let dy = 0; dy < grid.brushSize; dy += 1) {
         const y = originY + dy;
 
         if (y >= pixelMap.length) {
@@ -52,7 +64,7 @@ function collapsePixelMapForBrush(
           continue;
         }
 
-        for (let dx = 0; dx < brushSize; dx += 1) {
+        for (let dx = 0; dx < grid.brushSize; dx += 1) {
           const x = originX + dx;
 
           if (x >= sourceRow.length) {
@@ -131,8 +143,10 @@ export async function pixelizeImage(
     imageOffsetXPercent?: number;
     imageOffsetYPercent?: number;
     removeBackground?: boolean;
+    drawingMask?: DrawingMask | null;
   },
 ): Promise<PixelizationResult> {
+  const grid = createBrushGrid(profile);
   const resizeOptions = {
     width: profile.canvasWidth,
     height: profile.canvasHeight,
@@ -148,20 +162,22 @@ export async function pixelizeImage(
       : {}),
   };
   const resizedImage = await resizeImage(imageSource, resizeOptions);
-  const rawImage = options?.removeBackground ? autoRemoveBackground(resizedImage) : resizedImage;
+  const backgroundAdjustedImage = options?.removeBackground ? autoRemoveBackground(resizedImage) : resizedImage;
+  const maskedImage = applyDrawingMask(backgroundAdjustedImage, options?.drawingMask ?? null);
+  const drawingMaskCoverageMap = createDrawingMaskCoverageMap(options?.drawingMask ?? null, grid);
 
-  const fullPixelMap = quantizePixels(rawImage, {
+  const fullPixelMap = quantizePixels(maskedImage, {
     colorMode: profile.colorMode,
     colorCount: profile.colorCount,
     monoThreshold: profile.monoThreshold,
     palette: profile.palette,
   });
-  const pixelMap = collapsePixelMapForBrush(fullPixelMap, profile);
+  const pixelMap = collapsePixelMapForBrush(fullPixelMap, profile, drawingMaskCoverageMap);
 
   const usedColorIndexes = Array.from(
     new Set(
       pixelMap.flatMap((row) =>
-        row.filter((pixel) => pixel.alpha > 0).map((pixel) => pixel.colorIndex),
+        row.filter((pixel) => pixel.alpha > 0 && pixel.colorIndex >= 0).map((pixel) => pixel.colorIndex),
       ),
     ),
   ).sort((a, b) => a - b);

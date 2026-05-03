@@ -1,9 +1,12 @@
+import { deriveControllerStatus } from "./controllerStatus.js";
+
 const state = {
   activePage: "studio",
   imageDataUrl: null,
   commands: [],
   ports: [],
   selectedPortPath: "",
+  missingSelectedPortPath: null,
   serialSession: {
     connected: false,
     portPath: null,
@@ -56,6 +59,10 @@ const state = {
     target: "serial",
     canvasSize: 256,
     brushSize: 3,
+    templateCategory: "all",
+    templateId: "none",
+    templateLabel: "无模板（正方形）",
+    templates: [],
     imageScalePercent: 100,
     imageOffsetXPercent: 0,
     imageOffsetYPercent: 0,
@@ -64,6 +71,7 @@ const state = {
     colorCount: 32,
     removeBackground: false,
     usedColorIndexes: [],
+    generatedPalette: [],
     officialPalette: {
       rows: 0,
       cols: 0,
@@ -73,6 +81,8 @@ const state = {
       baudRate: 115200,
       ackTimeoutMs: 5000,
       commandRetryCount: 1,
+      templateId: "none",
+      templateLabel: "无模板（正方形）",
     },
     execution: {
       id: null,
@@ -89,6 +99,23 @@ const state = {
   firmware: {
     busy: false,
     environmentId: "esp32dev_wireless",
+    flash: {
+      status: "idle",
+      lines: [],
+      error: null,
+      startedAt: null,
+      finishedAt: null,
+      environmentId: null,
+      environmentLabel: null,
+      selectedPortPath: null,
+      uploadPortPath: null,
+      fallbackToAutoDetect: false,
+      platformIoPath: null,
+      timeoutMs: 15 * 60 * 1000,
+      lineOffset: 0,
+      totalLineCount: 0,
+    },
+    flashLineCount: 0,
     result: {
       status: "idle",
       title: "等待刷入固件",
@@ -139,6 +166,10 @@ const els = {
   studioModeHint: document.getElementById("studio-mode-hint"),
   sizeSelect: document.getElementById("size-select"),
   brushSizeSelect: document.getElementById("brush-size-select"),
+  templateCategorySelect: document.getElementById("template-category-select"),
+  templateSelect: document.getElementById("template-select"),
+  templatePreviewImage: document.getElementById("template-preview-image"),
+  templatePreviewLabel: document.getElementById("template-preview-label"),
   colorModeSelect: document.getElementById("color-mode-select"),
   colorCountSelect: document.getElementById("color-count-select"),
   thresholdLabel: document.getElementById("threshold-label"),
@@ -164,6 +195,7 @@ const els = {
   autoRemoveBackgroundCheckbox: document.getElementById("auto-remove-background-checkbox"),
   previewGuideSelect: document.getElementById("preview-guide-select"),
   previewCanvas: document.getElementById("preview-canvas"),
+  previewTemplateOverlay: document.getElementById("preview-template-overlay"),
   previewImage: document.getElementById("preview-image"),
   previewEmpty: document.getElementById("preview-empty"),
   officialPalettePanel: document.getElementById("official-palette-panel"),
@@ -189,6 +221,7 @@ const els = {
   firmwareRefreshButton: document.getElementById("firmware-refresh-button"),
   firmwareInstallToolingButton: document.getElementById("firmware-install-tooling-button"),
   firmwareFlashButton: document.getElementById("firmware-flash-button"),
+  firmwareStopButton: document.getElementById("firmware-stop-button"),
   firmwarePlatformIoHint: document.getElementById("firmware-platformio-hint"),
   firmwareEnvHint: document.getElementById("firmware-env-hint"),
   windowsDriverPanel: document.getElementById("windows-driver-panel"),
@@ -237,12 +270,20 @@ const els = {
 let studioExecutionPollTimer = null;
 let firmwareToolingPollTimer = null;
 let windowsSerialDriverPollTimer = null;
+let firmwareFlashPollTimer = null;
+let controllerStatusPollTimer = null;
+let controllerStatusPollDeadlineMs = 0;
+let controllerStatusPollInFlight = false;
 let studioPreviewRefreshTimer = null;
 let studioGenerateRequestSerial = 0;
 let studioPreviewBoundsRequestSerial = 0;
+const studioTemplateOverlayCache = new Map();
+const CONTROLLER_STATUS_POLL_INTERVAL_MS = 1_000;
+const CONTROLLER_STATUS_POLL_WINDOW_MS = 45_000;
 
 const COLOR_COUNT_OPTIONS_BY_MODE = {
   mono: [2],
+  palette: [8, 9, 16, 18, 24, 32, 64, 84, 128],
   official: [8, 16, 32, 64, 84],
 };
 
@@ -257,6 +298,15 @@ const STUDIO_IMAGE_OFFSET_LIMITS = {
 };
 
 const VALID_PAGE_NAMES = new Set(["studio", "firmware", "controller"]);
+const TEMPLATE_CATEGORY_LABELS = {
+  all: "全部模板",
+  tops: "上衣 / 长衣",
+  dresses: "裙装 / 衣摆",
+  bottoms: "下装",
+  hats: "帽子",
+  other: "几何 / 特殊",
+  base: "默认",
+};
 
 els.pageTabs.forEach((button) => {
   button.addEventListener("click", () => {
@@ -274,6 +324,23 @@ els.brushSizeSelect.addEventListener("change", () => {
   state.studio.brushSize = Number(els.brushSizeSelect.value);
   syncStudioUi();
   scheduleStudioPreviewRefresh();
+});
+
+els.templateCategorySelect.addEventListener("change", () => {
+  state.studio.templateCategory = els.templateCategorySelect.value || "all";
+  syncStudioTemplateOptions();
+  syncStudioUi();
+});
+
+els.templateSelect.addEventListener("change", () => {
+  const nextTemplateId = els.templateSelect.value || "none";
+  const changed = nextTemplateId !== state.studio.templateId;
+  applySelectedStudioTemplate(nextTemplateId);
+  syncStudioUi();
+
+  if (changed) {
+    scheduleStudioPreviewRefresh();
+  }
 });
 
 els.scaleRange.addEventListener("input", () => {
@@ -314,7 +381,8 @@ els.offsetYInput.addEventListener("blur", () => {
 
 els.colorModeSelect.addEventListener("change", () => {
   const nextMode = els.colorModeSelect.value;
-  state.studio.colorMode = nextMode === "official" ? "official" : "mono";
+  state.studio.colorMode =
+    nextMode === "official" || nextMode === "palette" ? nextMode : "mono";
   syncStudioColorCountOptions();
   syncStudioUi();
   scheduleStudioPreviewRefresh();
@@ -347,6 +415,7 @@ els.thresholdRange.addEventListener("input", () => {
 [els.studioPortSelect, els.firmwarePortSelect, els.controllerPortSelect].forEach((select) => {
   select.addEventListener("change", () => {
     state.selectedPortPath = select.value;
+    state.missingSelectedPortPath = null;
     renderPortSelects();
     syncStudioUi();
     syncFirmwareUi();
@@ -377,6 +446,10 @@ els.firmwareRefreshButton.addEventListener("click", async () => {
 
 els.firmwareInstallToolingButton.addEventListener("click", async () => {
   await startFirmwareToolingInstall();
+});
+
+els.firmwareStopButton.addEventListener("click", async () => {
+  await stopFirmwareFlash();
 });
 
 els.installCp210xDriverButton.addEventListener("click", async () => {
@@ -449,6 +522,193 @@ els.resetExecutionButton.addEventListener("click", async () => {
   await sendStudioExecutionControl("reset", "强制恢复绘制状态");
 });
 
+function findStudioTemplateById(templateId) {
+  return (
+    state.studio.templates.find((template) => template.id === templateId) ?? {
+      id: "none",
+      label: "无模板（正方形）",
+      category: "base",
+      maskUrl: "",
+      previewUrl: "",
+    }
+  );
+}
+
+function getFilteredStudioTemplates() {
+  if (state.studio.templateCategory === "all") {
+    return state.studio.templates;
+  }
+
+  return state.studio.templates.filter(
+    (template) => template.id === "none" || template.category === state.studio.templateCategory,
+  );
+}
+
+function applySelectedStudioTemplate(templateId) {
+  const nextTemplate = findStudioTemplateById(templateId) ?? findStudioTemplateById("none");
+
+  if (!nextTemplate) {
+    return;
+  }
+
+  state.studio.templateId = nextTemplate.id;
+  state.studio.templateLabel = nextTemplate.label;
+
+  if (
+    state.studio.templateCategory !== "all" &&
+    nextTemplate.id !== "none" &&
+    nextTemplate.category !== state.studio.templateCategory
+  ) {
+    state.studio.templateCategory = nextTemplate.category;
+  }
+}
+
+function syncStudioTemplateOptions() {
+  const categoryOptions = ["all", ...new Set(
+    state.studio.templates
+      .map((template) => template.category)
+      .filter((category) => category !== "base"),
+  )];
+  const nextCategory = categoryOptions.includes(state.studio.templateCategory)
+    ? state.studio.templateCategory
+    : "all";
+  state.studio.templateCategory = nextCategory;
+  els.templateCategorySelect.innerHTML = "";
+
+  categoryOptions.forEach((category) => {
+    const option = document.createElement("option");
+    option.value = category;
+    option.textContent = TEMPLATE_CATEGORY_LABELS[category] ?? category;
+    option.selected = category === nextCategory;
+    els.templateCategorySelect.appendChild(option);
+  });
+
+  const filteredTemplates = getFilteredStudioTemplates();
+
+  if (!filteredTemplates.some((template) => template.id === state.studio.templateId)) {
+    const fallbackTemplate = filteredTemplates[0] ?? findStudioTemplateById("none");
+    applySelectedStudioTemplate(fallbackTemplate?.id ?? "none");
+  }
+
+  els.templateSelect.innerHTML = "";
+
+  filteredTemplates.forEach((template) => {
+    const option = document.createElement("option");
+    option.value = template.id;
+    option.textContent = template.label;
+    option.selected = template.id === state.studio.templateId;
+    els.templateSelect.appendChild(option);
+  });
+}
+
+function renderStudioTemplatePreview() {
+  const template = findStudioTemplateById(state.studio.templateId) ?? findStudioTemplateById("none");
+  const previewUrl = template?.previewUrl ?? "";
+
+  if (previewUrl) {
+    els.templatePreviewImage.src = previewUrl;
+    els.templatePreviewImage.classList.add("visible");
+  } else {
+    els.templatePreviewImage.removeAttribute("src");
+    els.templatePreviewImage.classList.remove("visible");
+  }
+
+  els.templatePreviewLabel.textContent = template?.label ?? "无模板（正方形）";
+}
+
+function clearPreviewTemplateOverlay() {
+  els.previewTemplateOverlay.removeAttribute("src");
+  els.previewTemplateOverlay.classList.remove("visible");
+}
+
+async function updatePreviewTemplateOverlay() {
+  const template = findStudioTemplateById(state.studio.templateId);
+  const maskUrl = template?.maskUrl ?? "";
+
+  if (!template || template.id === "none" || !maskUrl) {
+    clearPreviewTemplateOverlay();
+    return;
+  }
+
+  try {
+    const overlayUrl = await buildTemplateOverlayDataUrl(maskUrl);
+
+    if (template.id !== state.studio.templateId) {
+      return;
+    }
+
+    els.previewTemplateOverlay.src = overlayUrl;
+    els.previewTemplateOverlay.classList.add("visible");
+  } catch (error) {
+    if (template.id === state.studio.templateId) {
+      clearPreviewTemplateOverlay();
+    }
+
+    console.warn(`Failed to build template overlay for ${template.id}.`, error);
+  }
+}
+
+async function buildTemplateOverlayDataUrl(previewUrl) {
+  if (studioTemplateOverlayCache.has(previewUrl)) {
+    return studioTemplateOverlayCache.get(previewUrl);
+  }
+
+  const image = await loadImageElement(previewUrl);
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth || 256;
+  canvas.height = image.naturalHeight || 256;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+
+  if (!context) {
+    return previewUrl;
+  }
+
+  context.drawImage(image, 0, 0);
+  const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+  const data = imageData.data;
+
+  for (let index = 0; index < data.length; index += 4) {
+    const alpha = data[index + 3] ?? 0;
+    data[index] = 19;
+    data[index + 1] = 34;
+    data[index + 2] = 56;
+    data[index + 3] = alpha > 0 ? 0 : 176;
+  }
+
+  context.putImageData(imageData, 0, 0);
+  const overlayUrl = canvas.toDataURL("image/png");
+  studioTemplateOverlayCache.set(previewUrl, overlayUrl);
+  return overlayUrl;
+}
+
+async function loadDrawingTemplates() {
+  const response = await fetch("/api/drawing-templates");
+  const payload = await response.json();
+
+  if (!response.ok) {
+    throw new Error(payload.error ?? "加载图纸模板失败");
+  }
+
+  state.studio.templates = Array.isArray(payload.templates) ? payload.templates : [];
+
+  if (state.studio.templates.length === 0) {
+    state.studio.templates = [
+      {
+        id: "none",
+        label: "无模板（正方形）",
+        category: "base",
+        maskUrl: "",
+        previewUrl: "",
+      },
+    ];
+  }
+
+  applySelectedStudioTemplate(state.studio.templateId);
+  syncStudioTemplateOptions();
+  renderStudioTemplatePreview();
+  await updatePreviewTemplateOverlay();
+}
+
 async function generateStudioCommands({ logPrefix }) {
   if (!state.imageDataUrl) {
     appendLog(els.studioLogOutput, "请先选择图片。");
@@ -485,6 +745,7 @@ function buildStudioGeneratePayload() {
     imageDataUrl: state.imageDataUrl,
     size: state.studio.canvasSize,
     brushSize: state.studio.brushSize,
+    templateId: state.studio.templateId,
     imageScalePercent: state.studio.imageScalePercent,
     imageOffsetXPercent: state.studio.imageOffsetXPercent,
     imageOffsetYPercent: state.studio.imageOffsetYPercent,
@@ -522,12 +783,18 @@ function applyGeneratedStudioPayload(payload) {
   state.studio.usedColorIndexes = Array.isArray(payload.stats.usedColorIndexes)
     ? payload.stats.usedColorIndexes
     : [];
+  state.studio.generatedPalette = Array.isArray(payload.profile.palette)
+    ? payload.profile.palette
+    : [];
   state.studio.profile = {
     baudRate: payload.profile.baudRate ?? 115200,
     ackTimeoutMs: payload.profile.ackTimeoutMs ?? 5000,
     commandRetryCount: payload.profile.commandRetryCount ?? 1,
+    templateId: payload.profile.templateId ?? state.studio.templateId,
+    templateLabel: payload.profile.templateLabel ?? state.studio.templateLabel,
   };
   state.studio.brushSize = payload.profile.brushSize ?? state.studio.brushSize;
+  applySelectedStudioTemplate(payload.profile.templateId ?? state.studio.templateId);
   state.studio.imageScalePercent =
     payload.profile.imageScalePercent ?? state.studio.imageScalePercent;
   state.studio.imageOffsetXPercent =
@@ -535,7 +802,9 @@ function applyGeneratedStudioPayload(payload) {
   state.studio.imageOffsetYPercent =
     payload.profile.imageOffsetYPercent ?? state.studio.imageOffsetYPercent;
   state.studio.colorMode =
-    payload.profile.colorMode === "official" ? "official" : "mono";
+    payload.profile.colorMode === "official" || payload.profile.colorMode === "palette"
+      ? payload.profile.colorMode
+      : "mono";
   state.studio.colorCount = payload.profile.colorCount ?? state.studio.colorCount;
   state.studio.removeBackground = payload.profile.removeBackground === true;
 
@@ -543,12 +812,18 @@ function applyGeneratedStudioPayload(payload) {
   els.previewImage.src = payload.previewDataUrl;
   els.previewImage.classList.add("visible");
   els.previewEmpty.classList.add("hidden");
-  els.statColors.textContent =
-    payload.profile.colorMode === "mono"
-      ? "黑 / 白"
-      : `${payload.stats.usedColorIndexes.length} / ${state.studio.colorCount} 官方色`;
+  void updatePreviewTemplateOverlay();
+  if (payload.profile.colorMode === "mono") {
+    els.statColors.textContent = "黑 / 白";
+  } else if (payload.profile.colorMode === "official") {
+    els.statColors.textContent = `${payload.stats.usedColorIndexes.length} / ${state.studio.colorCount} 官方色`;
+  } else {
+    els.statColors.textContent = `${payload.stats.usedColorIndexes.length} / ${state.studio.colorCount} 自动量化色`;
+  }
   els.statPixels.textContent = String(payload.stats.totalPixels);
-  els.statCommands.textContent = String(payload.stats.commandCount);
+  els.statCommands.textContent = payload.stats.pathStats
+    ? `${payload.stats.commandCount} · L ${payload.stats.pathStats.lineRunCount}`
+    : String(payload.stats.commandCount);
   els.statRuntime.textContent = payload.stats.estimatedRuntimeLabel;
   void updatePreviewBounds(payload);
   renderOfficialPalettePreview();
@@ -702,13 +977,11 @@ async function executeStudioCommands({ logPrefix }) {
     return false;
   }
 
-  // USB wired mode: ESP32-S3 can already control Switch through USB.
-// Do not block drawing on the old Bluetooth-ready state.
-if (false && !isControllerReadyForStudio()) {
-  appendLog(els.studioLogOutput, "开始绘制前，请先到“手柄测试”页把手柄连接状态跑到“已就绪”。");
-  switchPage("controller");
-  return false;
-}
+  if (!isControllerReadyForStudio()) {
+    appendLog(els.studioLogOutput, "开始绘制前，请先到“手柄测试”页把手柄连接状态跑到“已就绪”。");
+    switchPage("controller");
+    return false;
+  }
 
   appendLog(els.studioLogOutput, logPrefix);
 
@@ -777,30 +1050,26 @@ els.studioClearLogButton.addEventListener("click", () => {
 });
 
 els.firmwareFlashButton.addEventListener("click", async () => {
+  await startFirmwareFlash();
+});
+
+els.firmwareClearLogButton.addEventListener("click", () => {
+  clearLog(els.firmwareLogOutput);
+});
+
+async function startFirmwareFlash() {
   if (!state.selectedPortPath) {
-    appendLog(els.firmwareLogOutput, "请先选择要刷入的串口设备。");
+    appendLog(
+      els.firmwareLogOutput,
+      state.missingSelectedPortPath
+        ? `之前选择的串口 ${state.missingSelectedPortPath} 已断开，请重新选择目标设备后再刷入。`
+        : "请先选择要刷入的串口设备。",
+    );
     return;
   }
 
-  const environment = state.firmwareEnvironments.find(
-    (item) => item.id === state.firmware.environmentId,
-  );
-
-  setFirmwareBusy(true);
-  setFirmwareResult({
-    status: "running",
-    title: "正在刷入固件",
-    detail: "PlatformIO 正在编译并上传固件，请稍等片刻。",
-    environmentLabel: environment?.label ?? state.firmware.environmentId,
-    portPath: state.selectedPortPath,
-  });
-  appendLog(
-    els.firmwareLogOutput,
-    `开始刷入固件：${state.firmware.environmentId} -> ${state.selectedPortPath}`,
-  );
-  appendLog(els.firmwareLogOutput, "刷入前会自动释放串口会话，避免端口占用。");
-
   try {
+    state.firmware.flashLineCount = 0;
     const response = await fetch("/api/firmware/flash", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -811,39 +1080,211 @@ els.firmwareFlashButton.addEventListener("click", async () => {
     });
     const payload = await response.json();
 
+    applySerialSessionSnapshot(payload.session);
+
     if (!response.ok) {
-      applySerialSessionSnapshot(payload.session);
       throw new Error(payload.error ?? "刷入固件失败");
     }
 
-    setFirmwareResult({
-      status: "success",
-      title: "固件刷入成功",
-      detail: "设备已经写入完成，可以继续去手柄测试页读取设备信息。",
-      environmentLabel: payload.environment.label,
-      portPath: state.selectedPortPath,
-    });
-    applySerialSessionSnapshot(payload.session);
-    appendLog(els.firmwareLogOutput, "刷入前已释放串口会话。");
-    appendLog(els.firmwareLogOutput, `刷入完成：${payload.environment.label}`);
-    appendLog(els.firmwareLogOutput, payload.output.trim());
+    applyFirmwareFlashSnapshot(payload.flash);
+    pollFirmwareFlash();
   } catch (error) {
+    setFirmwareBusy(false);
     setFirmwareResult({
       status: "error",
       title: "固件刷入失败",
       detail: summarizeFirmwareError(getErrorMessage(error)),
-      environmentLabel: environment?.label ?? state.firmware.environmentId,
-      portPath: state.selectedPortPath,
+      environmentLabel:
+        state.firmwareEnvironments.find((item) => item.id === state.firmware.environmentId)?.label ??
+        state.firmware.environmentId,
+      portPath: state.selectedPortPath || "-",
     });
     appendLog(els.firmwareLogOutput, `刷入失败：${getErrorMessage(error)}`);
-  } finally {
-    setFirmwareBusy(false);
+    syncFirmwareUi();
   }
-});
+}
 
-els.firmwareClearLogButton.addEventListener("click", () => {
-  clearLog(els.firmwareLogOutput);
-});
+async function stopFirmwareFlash() {
+  if (!state.firmware.busy) {
+    return;
+  }
+
+  try {
+    const response = await fetch("/api/firmware/flash/cancel", {
+      method: "POST",
+    });
+    const payload = await response.json();
+
+    applySerialSessionSnapshot(payload.session);
+
+    if (!response.ok) {
+      throw new Error(payload.error ?? "停止刷入失败");
+    }
+
+    applyFirmwareFlashSnapshot(payload.flash);
+  } catch (error) {
+    appendLog(els.firmwareLogOutput, `停止刷入失败：${getErrorMessage(error)}`);
+  } finally {
+    syncFirmwareUi();
+  }
+}
+
+function formatFirmwarePortLabel(flash) {
+  if (flash?.uploadPortPath) {
+    return flash.uploadPortPath;
+  }
+
+  if (flash?.selectedPortPath) {
+    return `自动检测（初始选择 ${flash.selectedPortPath}）`;
+  }
+
+  return "-";
+}
+
+function updateFirmwareResultFromFlashSnapshot(flash) {
+  const environmentLabel =
+    flash?.environmentLabel ??
+    state.firmwareEnvironments.find((item) => item.id === state.firmware.environmentId)?.label ??
+    state.firmware.environmentId;
+  const portPath = formatFirmwarePortLabel(flash);
+
+  if (flash?.status === "running") {
+    const detail = flash.fallbackToAutoDetect
+      ? "固定端口刷入失败，正在改用 PlatformIO 自动探测可用端口重试。"
+      : flash.uploadPortPath
+        ? "PlatformIO 正在按当前选中的串口编译并上传固件，请稍等片刻。"
+        : "PlatformIO 正在自动探测可用串口并上传固件，请稍等片刻。";
+    setFirmwareResult({
+      status: "running",
+      title: "正在刷入固件",
+      detail,
+      environmentLabel,
+      portPath,
+    });
+    return;
+  }
+
+  if (flash?.status === "completed") {
+    const detail = flash.fallbackToAutoDetect
+      ? "固定端口失败后已自动改用 PlatformIO 串口探测并刷入成功，可以继续去手柄测试页读取设备信息。"
+      : "设备已经写入完成，可以继续去手柄测试页读取设备信息。";
+    setFirmwareResult({
+      status: "success",
+      title: "固件刷入成功",
+      detail,
+      environmentLabel,
+      portPath,
+    });
+    return;
+  }
+
+  if (flash?.status === "cancelled") {
+    setFirmwareResult({
+      status: "error",
+      title: "已停止刷入",
+      detail: "当前刷入任务已经取消，可以检查端口或让开发板重新进入下载模式后再重试。",
+      environmentLabel,
+      portPath,
+    });
+    return;
+  }
+
+  if (flash?.status === "failed") {
+    setFirmwareResult({
+      status: "error",
+      title: "固件刷入失败",
+      detail: summarizeFirmwareError(flash.error ?? "刷入失败，请查看下方日志。"),
+      environmentLabel,
+      portPath,
+    });
+  }
+}
+
+function applyFirmwareFlashSnapshot(flash) {
+  const nextFlash = flash ?? {
+    status: "idle",
+    lines: [],
+    error: null,
+    startedAt: null,
+    finishedAt: null,
+    environmentId: null,
+    environmentLabel: null,
+    selectedPortPath: null,
+    uploadPortPath: null,
+    fallbackToAutoDetect: false,
+    platformIoPath: null,
+    timeoutMs: 15 * 60 * 1000,
+    lineOffset: 0,
+    totalLineCount: 0,
+  };
+  const lines = Array.isArray(nextFlash.lines) ? nextFlash.lines : [];
+  const fallbackTotalLineCount = lines.length;
+  const totalLineCount = Number.isFinite(nextFlash.totalLineCount)
+    ? nextFlash.totalLineCount
+    : fallbackTotalLineCount;
+  const lineOffset = Number.isFinite(nextFlash.lineOffset)
+    ? nextFlash.lineOffset
+    : Math.max(0, totalLineCount - lines.length);
+  const previousLineCount = state.firmware.flashLineCount ?? 0;
+  const firstUnreadLine = previousLineCount > totalLineCount
+    ? lineOffset
+    : Math.max(previousLineCount, lineOffset);
+  const newLines = lines.slice(firstUnreadLine - lineOffset);
+
+  newLines.forEach((line) => appendLog(els.firmwareLogOutput, `[flash] ${line}`));
+  state.firmware.flash = {
+    ...nextFlash,
+    lineOffset,
+    totalLineCount,
+    lines,
+  };
+  state.firmware.flashLineCount = totalLineCount;
+  setFirmwareBusy(nextFlash.status === "running");
+  updateFirmwareResultFromFlashSnapshot(state.firmware.flash);
+}
+
+function pollFirmwareFlash() {
+  if (firmwareFlashPollTimer) {
+    return;
+  }
+
+  firmwareFlashPollTimer = window.setInterval(async () => {
+    try {
+      const response = await fetch("/api/firmware/flash/status");
+      const payload = await response.json();
+
+      applySerialSessionSnapshot(payload.session);
+
+      if (!response.ok) {
+        throw new Error(payload.error ?? "读取刷入状态失败");
+      }
+
+      applyFirmwareFlashSnapshot(payload.flash);
+
+      if (payload.flash?.status === "completed" || payload.flash?.status === "failed" || payload.flash?.status === "cancelled") {
+        stopFirmwareFlashPolling();
+        await refreshPorts({
+          log: (message) => appendLog(els.firmwareLogOutput, message),
+        });
+      }
+    } catch (error) {
+      stopFirmwareFlashPolling();
+      setFirmwareBusy(false);
+      appendLog(els.firmwareLogOutput, `读取刷入状态失败：${getErrorMessage(error)}`);
+    } finally {
+      syncFirmwareUi();
+    }
+  }, 1_000);
+}
+
+function stopFirmwareFlashPolling() {
+  if (!firmwareFlashPollTimer) {
+    return;
+  }
+
+  window.clearInterval(firmwareFlashPollTimer);
+  firmwareFlashPollTimer = null;
+}
 
 async function startFirmwareToolingInstall() {
   if (state.firmwareTooling.available) {
@@ -1092,15 +1533,34 @@ function stopWindowsSerialDriverPolling() {
 }
 
 els.controllerInfoButton.addEventListener("click", async () => {
-  await runControllerCommands(["I"], "连接手柄");
+  setControllerPendingStatus({
+    title: "正在准备连接手柄",
+    detail: "正在重置蓝牙并重新进入可发现状态，请保持 Switch 停在“更改握法/顺序”页面。",
+  });
+
+  const payload = await runControllerCommands(["BT RESET", "I"], "连接手柄");
+
+  if (payload) {
+    startControllerStatusPolling();
+  }
 });
 
 els.controllerResetButton.addEventListener("click", async () => {
-  await runControllerCommands(["BT RESET"], "重置手柄蓝牙");
+  setControllerPendingStatus({
+    title: "正在重置手柄蓝牙",
+    detail: "正在重启蓝牙协议栈并读取最新状态，请稍等片刻。",
+  });
+
+  const payload = await runControllerCommands(["BT RESET", "I"], "重置手柄蓝牙");
+
+  if (payload) {
+    startControllerStatusPolling();
+  }
 });
 
 els.controllerDisconnectButton.addEventListener("click", async () => {
   setControllerBusy(true);
+  stopControllerStatusPolling();
 
   try {
     const response = await fetch("/api/serial-session/disconnect", {
@@ -1366,50 +1826,6 @@ function setControllerBusy(isBusy) {
   syncControllerUi();
 }
 
-function readInfoLineMap(lines) {
-  const info = {};
-
-  (lines ?? []).forEach((line) => {
-    const match = /^INFO\s+([^=]+)=(.*)$/u.exec(line);
-    if (!match) {
-      return;
-    }
-
-    const [, key, value] = match;
-    info[key.trim()] = value.trim();
-  });
-
-  return info;
-}
-
-function boolFromInfo(value) {
-  if (value === "true") {
-    return true;
-  }
-
-  if (value === "false") {
-    return false;
-  }
-
-  return null;
-}
-
-function boolLabel(value, labels) {
-  if (value === true) {
-    return labels[0];
-  }
-
-  if (value === false) {
-    return labels[1];
-  }
-
-  return "未知";
-}
-
-function isControllerSendableStatus({ connected, paired, ready }) {
-  return ready === true || (connected === true && paired === true);
-}
-
 function applySerialSessionSnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== "object") {
     return;
@@ -1479,84 +1895,159 @@ function setControllerStatus(partialStatus) {
     updatedAt: new Date(),
   };
   renderControllerStatus();
+  syncControllerUi();
   syncStudioUi();
 }
 
-function updateControllerStatusFromLines(lines) {
-  const info = readInfoLineMap(lines);
-
-  if (!info.transport && !info.bt_mode && !info.bt_profile) {
-    return;
-  }
-
-  const discoverable = boolFromInfo(info.bt_discoverable);
-  const authComplete = boolFromInfo(info.bt_auth_complete);
-  const connected = boolFromInfo(info.bt_connected);
-  const paired = boolFromInfo(info.bt_paired);
-  const rawReady = boolFromInfo(info.bt_ready_for_reports);
-  const ready = isControllerSendableStatus({ connected, paired, ready: rawReady });
-  const readyInferredFromPairing = rawReady !== true && connected === true && paired === true;
-  const initError = info.bt_init_error ?? "-";
-
-  let tone = "idle";
-  let pill = "待连接";
-  let title = "等待连接手柄";
-  let detail = "当前还没有拿到可用的蓝牙连接状态。";
-
-  if (initError !== "-" && initError !== "ESP_OK") {
-    tone = "error";
-    pill = "异常";
-    title = "初始化异常";
-    detail = `蓝牙初始化停在 ${info.bt_init_step ?? "unknown"}，返回 ${initError}。`;
-  } else if (ready === true) {
-    tone = "success";
-    pill = "已就绪";
-    title = "手柄已连接";
-    detail = readyInferredFromPairing
-      ? "开发板已经完成 HID 连接和配对；固件报告通道字段可能滞后，但当前状态已经可以发送按钮和摇杆报告。"
-      : "开发板已经完成连接并可发送按钮和摇杆报告，可以继续做手柄测试。";
-  } else if (connected === true) {
-    tone = "running";
-    pill = "已连接";
-    title = "连接已建立";
-    detail = "HID 连接已经建立，正在等待配对完成或报告通道完全就绪。";
-  } else if (authComplete === true) {
-    tone = "running";
-    pill = "已认证";
-    title = "认证已通过";
-    detail = "Switch 已完成蓝牙认证，正在尝试把这块板子接成可用手柄。";
-  } else if (discoverable === true) {
-    tone = "running";
-    pill = "广播中";
-    title = "等待 Switch 发现";
-    detail = "开发板正在广播。请在 Switch 的“更改握法/顺序”页面停留等待。";
-  }
-
+function setControllerPendingStatus({ title, detail }) {
   setControllerStatus({
-    tone,
-    pill,
+    tone: "running",
+    pill: "处理中",
     title,
     detail,
-    transport: info.transport ?? "-",
-    profile: info.bt_profile ?? info.bt_mode ?? "-",
-    discoverable: boolLabel(discoverable, ["可发现", "未发现"]),
-    auth: boolLabel(authComplete, ["已通过", "未通过"]),
-    connected: boolLabel(connected, ["已连接", "未连接"]),
-    paired: boolLabel(paired, ["已配对", "未配对"]),
-    ready: boolLabel(ready, ["可发送", "未就绪"]),
-    discoverableValue: discoverable,
-    authValue: authComplete,
-    connectedValue: connected,
-    pairedValue: paired,
-    readyValue: ready,
-    peer: info.bt_last_peer ?? "-",
-    initStep: info.bt_init_step ?? "-",
-    initError,
+    discoverable: "未知",
+    auth: "未知",
+    connected: "未知",
+    paired: "未知",
+    ready: "未就绪",
+    discoverableValue: null,
+    authValue: null,
+    connectedValue: null,
+    pairedValue: null,
+    readyValue: false,
+    initStep: "-",
+    initError: "-",
   });
 }
 
+function updateControllerStatusFromLines(lines) {
+  const status = deriveControllerStatus(lines);
+
+  if (!status) {
+    return;
+  }
+  setControllerStatus(status);
+}
+
 function isControllerReadyForStudio() {
+  // USB wired / Wi-Fi ESP32 mode:
+  // Do not block studio drawing on the original Bluetooth-ready state.
+  // A selected serial/TCP bridge port is enough for the phone workflow.
   return Boolean(state.selectedPortPath);
+}
+
+async function requestControllerStatus({ logErrors = false } = {}) {
+  if (!state.selectedPortPath) {
+    return false;
+  }
+
+  if (controllerStatusPollInFlight) {
+    return null;
+  }
+
+  controllerStatusPollInFlight = true;
+
+  try {
+    const response = await fetch("/api/execute", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        target: "serial",
+        commands: ["I"],
+        portPath: state.selectedPortPath,
+        baudRate: state.studio.profile.baudRate,
+        ackTimeoutMs: state.studio.profile.ackTimeoutMs,
+        retries: state.studio.profile.commandRetryCount,
+        ackDelayMs: 0,
+      }),
+    });
+    const payload = await response.json();
+
+    if (!response.ok) {
+      applySerialSessionSnapshot(payload.session);
+      throw new Error(payload.error ?? "读取手柄状态失败");
+    }
+
+    applySerialSessionSnapshot(payload.session);
+    updateControllerStatusFromLines(payload.lines ?? []);
+    return true;
+  } catch (error) {
+    if (logErrors) {
+      appendLog(els.controllerLogOutput, `读取手柄状态失败：${getErrorMessage(error)}`);
+    }
+    return false;
+  } finally {
+    controllerStatusPollInFlight = false;
+  }
+}
+
+async function pollControllerStatus() {
+  if (state.controller.busy) {
+    return;
+  }
+
+  if (controllerStatusPollInFlight) {
+    return;
+  }
+
+  if (!state.selectedPortPath) {
+    stopControllerStatusPolling();
+    return;
+  }
+
+  if (controllerStatusPollDeadlineMs > 0 && Date.now() > controllerStatusPollDeadlineMs) {
+    stopControllerStatusPolling();
+    return;
+  }
+
+  const ok = await requestControllerStatus();
+
+  if (ok === null) {
+    return;
+  }
+
+  if (!ok) {
+    stopControllerStatusPolling();
+    appendLog(els.controllerLogOutput, "读取手柄状态失败，请重新点击“连接手柄”后再试。");
+    return;
+  }
+
+  if (
+    state.controller.status.readyValue === true ||
+    state.controller.status.tone === "error"
+  ) {
+    stopControllerStatusPolling();
+  }
+}
+
+function startControllerStatusPolling(durationMs = CONTROLLER_STATUS_POLL_WINDOW_MS) {
+  if (!state.selectedPortPath) {
+    return;
+  }
+
+  controllerStatusPollDeadlineMs = Math.max(
+    controllerStatusPollDeadlineMs,
+    Date.now() + durationMs,
+  );
+
+  if (!controllerStatusPollTimer) {
+    controllerStatusPollTimer = window.setInterval(() => {
+      void pollControllerStatus();
+    }, CONTROLLER_STATUS_POLL_INTERVAL_MS);
+  }
+
+  void pollControllerStatus();
+}
+
+function stopControllerStatusPolling() {
+  controllerStatusPollDeadlineMs = 0;
+
+  if (!controllerStatusPollTimer) {
+    return;
+  }
+
+  window.clearInterval(controllerStatusPollTimer);
+  controllerStatusPollTimer = null;
 }
 
 function renderStudioConnectionStatus() {
@@ -1623,34 +2114,68 @@ function renderStudioExecutionStatus() {
 
 function renderOfficialPalettePreview() {
   const isOfficialMode = state.studio.colorMode === "official";
+  const isPaletteMode = state.studio.colorMode === "palette";
   const palette = state.studio.officialPalette;
+  const generatedPalette = Array.isArray(state.studio.generatedPalette)
+    ? state.studio.generatedPalette
+    : [];
 
   els.officialPalettePanel.classList.toggle(
     "hidden",
-    !isOfficialMode || !Array.isArray(palette.grid) || palette.grid.length === 0,
+    isOfficialMode
+      ? !Array.isArray(palette.grid) || palette.grid.length === 0
+      : !isPaletteMode || generatedPalette.length === 0,
   );
 
-  if (!isOfficialMode || !Array.isArray(palette.grid) || palette.grid.length === 0) {
+  if (isOfficialMode && Array.isArray(palette.grid) && palette.grid.length > 0) {
+    const usedIndexes = new Set(
+      Array.isArray(state.studio.usedColorIndexes) ? state.studio.usedColorIndexes : [],
+    );
+    const usedCount = usedIndexes.size;
+    els.officialPaletteSummary.textContent =
+      usedCount > 0
+        ? `这里显示程序当前使用的 7x12 官方色盘。当前这张图实际量化到了 ${usedCount} 个官方色，已高亮对应格子。`
+        : "这里显示程序当前使用的 7x12 官方色盘，并会高亮这张图实际量化到的颜色格。";
+
     els.officialPaletteGrid.innerHTML = "";
+
+    palette.grid.forEach((rowColors, rowIndex) => {
+      rowColors.forEach((colorHex, colIndex) => {
+        const cell = document.createElement("div");
+        const flatIndex = rowIndex * palette.cols + colIndex;
+        cell.className = `official-palette-cell${usedIndexes.has(flatIndex) ? " used" : ""}`;
+
+        const swatch = document.createElement("div");
+        swatch.className = "official-palette-swatch";
+        swatch.style.background = colorHex;
+
+        const meta = document.createElement("div");
+        meta.className = "official-palette-meta";
+
+        const coord = document.createElement("span");
+        coord.className = "official-palette-coord";
+        coord.textContent = `R${rowIndex} · C${colIndex}`;
+
+        const hex = document.createElement("span");
+        hex.className = "official-palette-hex";
+        hex.textContent = colorHex;
+
+        meta.append(coord, hex);
+        cell.append(swatch, meta);
+        els.officialPaletteGrid.appendChild(cell);
+      });
+    });
     return;
   }
 
-  const usedIndexes = new Set(
-    Array.isArray(state.studio.usedColorIndexes) ? state.studio.usedColorIndexes : [],
-  );
-  const usedCount = usedIndexes.size;
-  els.officialPaletteSummary.textContent =
-    usedCount > 0
-      ? `这里显示程序当前使用的 7x12 官方色盘。当前这张图实际量化到了 ${usedCount} 个官方色，已高亮对应格子。`
-      : "这里显示程序当前使用的 7x12 官方色盘，并会高亮这张图实际量化到的颜色格。";
+  if (isPaletteMode && generatedPalette.length > 0) {
+    els.officialPaletteSummary.textContent =
+      `这里完整列出这张图当前预览实际用到的全部颜色。当前共使用 ${generatedPalette.length} 个自动量化颜色，绘制时会按 9 槽一批写入自定义色槽。`;
+    els.officialPaletteGrid.innerHTML = "";
 
-  els.officialPaletteGrid.innerHTML = "";
-
-  palette.grid.forEach((rowColors, rowIndex) => {
-    rowColors.forEach((colorHex, colIndex) => {
+    generatedPalette.forEach((colorHex, index) => {
       const cell = document.createElement("div");
-      const flatIndex = rowIndex * palette.cols + colIndex;
-      cell.className = `official-palette-cell${usedIndexes.has(flatIndex) ? " used" : ""}`;
+      cell.className = "official-palette-cell used";
 
       const swatch = document.createElement("div");
       swatch.className = "official-palette-swatch";
@@ -1661,7 +2186,7 @@ function renderOfficialPalettePreview() {
 
       const coord = document.createElement("span");
       coord.className = "official-palette-coord";
-      coord.textContent = `R${rowIndex} · C${colIndex}`;
+      coord.textContent = `P${index}`;
 
       const hex = document.createElement("span");
       hex.className = "official-palette-hex";
@@ -1671,7 +2196,10 @@ function renderOfficialPalettePreview() {
       cell.append(swatch, meta);
       els.officialPaletteGrid.appendChild(cell);
     });
-  });
+    return;
+  }
+
+  els.officialPaletteGrid.innerHTML = "";
 }
 
 function syncStudioColorCountOptions() {
@@ -1703,6 +2231,11 @@ function syncStudioUi() {
 
   els.sizeSelect.value = String(state.studio.canvasSize);
   els.brushSizeSelect.value = String(state.studio.brushSize);
+  syncStudioTemplateOptions();
+  els.templateCategorySelect.value = state.studio.templateCategory;
+  els.templateSelect.value = state.studio.templateId;
+  renderStudioTemplatePreview();
+  void updatePreviewTemplateOverlay();
   els.scaleRange.value = String(state.studio.imageScalePercent);
   els.scaleInput.value = String(state.studio.imageScalePercent);
   els.offsetXRange.value = String(state.studio.imageOffsetXPercent);
@@ -1718,19 +2251,31 @@ function syncStudioUi() {
     ? "已开启自动扣背景，会优先去掉白底、浅灰底和棋盘格假透明背景。"
     : "当前不会自动扣背景；如果素材是白底或棋盘格假透明图，建议开启。";
   const squareBrushHint = "建议同时把 Switch 里的笔刷切到方块笔刷，整体观感通常会更美观。";
+  const templateHint =
+    state.studio.templateId === "none"
+      ? "当前使用正方形画布，不会额外裁掉模板外区域。"
+      : `当前模板是“${state.studio.templateLabel}”，纯模板外区域不会显示；边缘格子只要碰到模板，也会保留绘制来填满可见边缘。`;
   const scaleHint = `当前导入缩放是 ${state.studio.imageScalePercent}%，100% 表示完整放进画布。`;
   const positionHint = describeImagePosition(
     state.studio.imageOffsetXPercent,
     state.studio.imageOffsetYPercent,
   );
-  els.studioModeHint.textContent =
-    state.studio.colorMode === "mono"
-      ? `深色像素会绘制，浅色像素会保留为空白背景。当前会先按 ${state.studio.imageScalePercent}% 调整图片大小，再放进 256x256 脚本坐标画布，并按 ${state.studio.brushSize} 号笔和画布中心起步生成。${scaleHint}${positionHint}${squareBrushHint}${backgroundHint}`
-      : `当前会先按 ${state.studio.imageScalePercent}% 调整图片大小，再把图片压到 ${state.studio.colorCount} 个官方色以内，并映射到游戏内置的 7x12 官方色盘，再按 ${state.studio.brushSize} 号笔生成。${scaleHint}${positionHint}开始前请保持右侧 9 个槽位默认颜色不变。${squareBrushHint}${backgroundHint}`;
+  if (state.studio.colorMode === "mono") {
+    els.studioModeHint.textContent =
+      `深色像素会绘制，浅色像素会保留为空白背景。当前会先按 ${state.studio.imageScalePercent}% 调整图片大小，再放进 256x256 脚本坐标画布，并按 ${state.studio.brushSize} 号笔和画布中心起步生成。${templateHint}${scaleHint}${positionHint}${squareBrushHint}${backgroundHint}`;
+  } else if (state.studio.colorMode === "official") {
+    els.studioModeHint.textContent =
+      `当前会先按 ${state.studio.imageScalePercent}% 调整图片大小，再把图片压到 ${state.studio.colorCount} 个官方色以内，并映射到游戏内置的 7x12 官方色盘，再按 ${state.studio.brushSize} 号笔生成。${templateHint}${scaleHint}${positionHint}开始前请保持右侧 9 个槽位默认颜色不变。${squareBrushHint}${backgroundHint}`;
+  } else {
+    els.studioModeHint.textContent =
+      `当前会先按 ${state.studio.imageScalePercent}% 调整图片大小，再把图片自动量化到最多 ${state.studio.colorCount} 个颜色，并按批次写入游戏的 9 个自定义槽位后进行绘制。下方“当前预览用色”会完整列出这次预览实际用到的全部颜色。${templateHint}${scaleHint}${positionHint}这条路线仍属于实验能力，当前优先目标是输入稳定性，不保证所有图片都稳定。${squareBrushHint}${backgroundHint}`;
+  }
   els.studioPortSelect.disabled = state.studio.busy || executionActive;
   els.refreshPortsButton.disabled = state.studio.busy || executionActive;
   els.sizeSelect.disabled = state.studio.busy || executionActive;
   els.brushSizeSelect.disabled = state.studio.busy || executionActive;
+  els.templateCategorySelect.disabled = state.studio.busy || executionActive;
+  els.templateSelect.disabled = state.studio.busy || executionActive;
   els.scaleRange.disabled = state.studio.busy || executionActive;
   els.scaleInput.disabled = state.studio.busy || executionActive;
   els.offsetXRange.disabled = state.studio.busy || executionActive;
@@ -1803,8 +2348,10 @@ function syncStudioUi() {
 
   els.executionHint.textContent =
     state.studio.colorMode === "mono"
-      ? `当前会把按 ${state.studio.imageScalePercent}% 缩放、${describeImagePosition(state.studio.imageOffsetXPercent, state.studio.imageOffsetYPercent, false)}后的 256x256 黑白脚本通过串口发送到 ${state.selectedPortPath}，由 ESP32 从画布中心起步，按 ${state.studio.brushSize} 号笔继续翻译成方向键移动与 A 绘制。建议开始前把 Switch 里的笔刷切到方块笔刷，整体观感通常会更美观。`
-      : `当前会把按 ${state.studio.imageScalePercent}% 缩放、${describeImagePosition(state.studio.imageOffsetXPercent, state.studio.imageOffsetYPercent, false)}后的 256x256 官方色脚本通过串口发送到 ${state.selectedPortPath}。请先保持右侧 9 个槽位默认颜色不变，ESP32 会按这组默认槽位状态去配置内置 7x12 色盘，并按 ${state.studio.brushSize} 号笔绘制。建议开始前把 Switch 里的笔刷切到方块笔刷，整体观感通常会更美观。`;
+      ? `当前会把按 ${state.studio.imageScalePercent}% 缩放、${describeImagePosition(state.studio.imageOffsetXPercent, state.studio.imageOffsetYPercent, false)}后的 256x256 黑白脚本通过串口发送到 ${state.selectedPortPath}，模板为“${state.studio.templateLabel}”。由 ESP32 从画布中心起步，按 ${state.studio.brushSize} 号笔继续翻译成方向键移动与 A 绘制。建议开始前把 Switch 里的笔刷切到方块笔刷，整体观感通常会更美观。`
+      : state.studio.colorMode === "official"
+        ? `当前会把按 ${state.studio.imageScalePercent}% 缩放、${describeImagePosition(state.studio.imageOffsetXPercent, state.studio.imageOffsetYPercent, false)}后的 256x256 官方色脚本通过串口发送到 ${state.selectedPortPath}，模板为“${state.studio.templateLabel}”。请先保持右侧 9 个槽位默认颜色不变，ESP32 会按这组默认槽位状态去配置内置 7x12 色盘，并按 ${state.studio.brushSize} 号笔绘制。建议开始前把 Switch 里的笔刷切到方块笔刷，整体观感通常会更美观。`
+        : `当前会把按 ${state.studio.imageScalePercent}% 缩放、${describeImagePosition(state.studio.imageOffsetXPercent, state.studio.imageOffsetYPercent, false)}后的 256x256 自动量化多色脚本通过串口发送到 ${state.selectedPortPath}，模板为“${state.studio.templateLabel}”。ESP32 会分批把当前预览实际用到的颜色写入 9 个自定义槽位后再绘制；这条路线仍处于实验阶段，建议先从颜色较少、结构简单的图片开始。`;
   renderStudioConnectionStatus();
 }
 
@@ -1812,6 +2359,7 @@ function syncFirmwareUi() {
   const environment = state.firmwareEnvironments.find(
     (item) => item.id === state.firmware.environmentId,
   );
+  const selectedPortAvailable = state.ports.some((port) => port.path === state.selectedPortPath);
 
   if (environment) {
     els.firmwareEnvHint.textContent = environment.description;
@@ -1834,11 +2382,16 @@ function syncFirmwareUi() {
     els.firmwarePlatformIoHint.textContent = `PlatformIO 已就绪：${state.firmwareTooling.path}`;
   }
 
+  if (state.missingSelectedPortPath) {
+    els.firmwareEnvHint.textContent = `之前选择的串口 ${state.missingSelectedPortPath} 已断开，请重新选择目标设备。`;
+  }
+
   syncWindowsSerialDriverUi();
 
   els.firmwarePortSelect.disabled = state.firmware.busy;
+  els.firmwareStopButton.disabled = !state.firmware.busy;
   els.firmwareFlashButton.disabled =
-    state.firmware.busy || installing || !state.firmwareTooling.available || !state.selectedPortPath;
+    state.firmware.busy || installing || !state.firmwareTooling.available || !selectedPortAvailable;
   renderFirmwareStatus();
 }
 
@@ -1883,16 +2436,19 @@ function syncWindowsSerialDriverUi() {
 
 function syncControllerUi() {
   const hasPort = Boolean(state.selectedPortPath);
+  const ready = state.controller.status.readyValue === true;
+  const canSendTestCommands = !state.controller.busy && hasPort && ready;
 
   els.controllerPortSelect.disabled = state.controller.busy;
 
   const shouldDisable = state.controller.busy || !hasPort;
   els.controllerInfoButton.disabled = shouldDisable;
   els.controllerResetButton.disabled = shouldDisable;
-  els.controllerSendCustomButton.disabled = shouldDisable;
+  els.controllerSendCustomButton.disabled = !canSendTestCommands;
+  els.controllerCustomCommands.disabled = !canSendTestCommands;
   els.controllerDisconnectButton.disabled = state.controller.busy || !state.serialSession.connected;
   els.controllerActionButtons.forEach((button) => {
-    button.disabled = shouldDisable;
+    button.disabled = !canSendTestCommands;
   });
   renderSerialSessionStatus();
 }
@@ -1946,7 +2502,7 @@ async function runExecution({
 async function runControllerCommands(commands, label) {
   if (!state.selectedPortPath) {
     appendLog(els.controllerLogOutput, "请先选择一个串口设备。");
-    return;
+    return null;
   }
 
   appendLog(
@@ -1969,6 +2525,8 @@ async function runControllerCommands(commands, label) {
   if (payload?.lines) {
     updateControllerStatusFromLines(payload.lines);
   }
+
+  return payload;
 }
 
 function mapControllerActionToCommands(action, step) {
@@ -2032,6 +2590,7 @@ async function refreshPorts({ log } = {}) {
   }
 
   try {
+    const previousSelectedPortPath = state.selectedPortPath;
     const response = await fetch("/api/ports");
     const payload = await response.json();
 
@@ -2041,8 +2600,15 @@ async function refreshPorts({ log } = {}) {
 
     state.ports = Array.isArray(payload.ports) ? payload.ports : [];
 
-    if (!state.ports.some((port) => port.path === state.selectedPortPath)) {
+    if (!previousSelectedPortPath) {
       state.selectedPortPath = pickPreferredPortPath();
+      state.missingSelectedPortPath = null;
+    } else if (state.ports.some((port) => port.path === previousSelectedPortPath)) {
+      state.selectedPortPath = previousSelectedPortPath;
+      state.missingSelectedPortPath = null;
+    } else {
+      state.selectedPortPath = "";
+      state.missingSelectedPortPath = previousSelectedPortPath;
     }
 
     renderPortSelects();
@@ -2056,6 +2622,10 @@ async function refreshPorts({ log } = {}) {
           ? `检测到 ${state.ports.length} 个串口设备。`
           : "当前没有检测到串口设备。请换数据线、重新插拔 ESP32；PlatformIO 就绪后仍无设备时优先安装 CP210x 驱动，再尝试 CH340/CH341 驱动。",
       );
+
+      if (state.missingSelectedPortPath) {
+        log(`之前选择的串口 ${state.missingSelectedPortPath} 已消失，请重新选择目标设备。`);
+      }
     }
   } catch (error) {
     if (typeof log === "function") {
@@ -2075,7 +2645,13 @@ function renderPortSelects() {
   selects.forEach((select) => {
     select.innerHTML = "";
 
-    if (state.ports.length === 0) {
+    if (state.missingSelectedPortPath) {
+      const missingOption = document.createElement("option");
+      missingOption.value = "";
+      missingOption.textContent = `之前选择的串口已断开：${state.missingSelectedPortPath}`;
+      missingOption.selected = true;
+      select.appendChild(missingOption);
+    } else if (state.ports.length === 0) {
       const option = document.createElement("option");
       option.value = "";
       option.textContent = "未检测到串口";
@@ -2087,7 +2663,7 @@ function renderPortSelects() {
       const option = document.createElement("option");
       option.value = port.path;
       option.textContent = port.label;
-      option.selected = state.selectedPortPath ? port.path === state.selectedPortPath : index === 0;
+      option.selected = state.selectedPortPath ? port.path === state.selectedPortPath : index === 0 && !state.missingSelectedPortPath;
       select.appendChild(option);
     });
   });
@@ -2115,6 +2691,14 @@ async function loadFirmwareInfo() {
     if (payload.install?.status === "running") {
       applyFirmwareToolingInstallSnapshot(payload.install);
       pollFirmwareToolingInstall();
+    }
+
+    if (payload.flash) {
+      applyFirmwareFlashSnapshot(payload.flash);
+
+      if (payload.flash.status === "running") {
+        pollFirmwareFlash();
+      }
     }
 
     if (!state.firmwareEnvironments.some((item) => item.id === state.firmware.environmentId)) {
@@ -2288,6 +2872,22 @@ function summarizeFirmwareError(message) {
     return "串口当前被占用，请先关闭串口监视器或其他串口工具后再重试。";
   }
 
+  if (/Timed out waiting for packet header|Failed to connect|No serial data received|A fatal error occurred/i.test(message)) {
+    return "设备没有顺利进入下载模式。请重新插拔开发板，必要时按住 BOOT 键后再重试刷入。";
+  }
+
+  if (/could not open port|cannot configure port|No upload port found|No such file or directory|Access is denied|Permission denied|port doesn't exist/i.test(message)) {
+    return "当前串口不可用，或端口号已经变化。请刷新串口列表并重新选择目标设备后再重试。";
+  }
+
+  if (/timed out after \d+m \d+s/i.test(message)) {
+    return "刷入超时了。请检查数据线、下载模式和网络，再重试；如果开发板难以进入下载模式，可以按住 BOOT 键后重新刷入。";
+  }
+
+  if (/cancelled by user/i.test(message)) {
+    return "刷入任务已停止。请检查端口和开发板状态后再重试。";
+  }
+
   if (/PlatformIO not found/i.test(message)) {
     return "没有找到 PlatformIO，请先确认本机安装是否完成。";
   }
@@ -2299,7 +2899,7 @@ function summarizeFirmwareError(message) {
   const summaryLine = message
     .split("\n")
     .map((line) => line.trim())
-    .find(Boolean);
+    .find((line) => line && !line.startsWith("$ "));
 
   return summaryLine ?? "刷入失败，请查看下方日志。";
 }
@@ -2316,7 +2916,17 @@ function clearLog(element) {
 }
 
 function getErrorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (/Cannot lock port|exclusively lock port|port is busy|Resource temporarily unavailable/i.test(message)) {
+    return "串口当前被其他进程占用，常见原因是另一个 Friend Maker 实例或串口工具仍保持连接。请先断开旧连接，或完全退出占用程序后再重试。";
+  }
+
+  if (/controller input report failed/i.test(message)) {
+    return `${message}。请重新连接手柄，或改用更慢的输入时序后再开始。`;
+  }
+
+  return message;
 }
 
 function clampNumber(value, min, max) {
@@ -2450,6 +3060,7 @@ async function init() {
   syncStudioColorCountOptions();
   await Promise.all([
     refreshPorts(),
+    loadDrawingTemplates(),
     loadFirmwareInfo(),
     loadWindowsSerialDriversInfo(),
     loadOfficialPalette(),
@@ -2461,6 +3072,10 @@ async function init() {
   syncFirmwareUi();
   syncControllerUi();
   renderControllerStatus();
+
+  if (state.serialSession.connected && state.selectedPortPath) {
+    void requestControllerStatus();
+  }
 }
 
 void init();

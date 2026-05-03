@@ -11,6 +11,11 @@ import { applyCliOptions, type CliOptions } from "../cli/args.js";
 import { loadProfile } from "../config/loadProfile.js";
 import { OFFICIAL_COLOR_GRID } from "../config/officialPalette.js";
 import {
+  getDrawingTemplateDefinition,
+  listDrawingTemplates,
+  loadDrawingTemplateMask,
+} from "../drawingTemplates.js";
+import {
   FirmwareToolingManager,
   type ToolingConfig,
 } from "./firmwareTooling.js";
@@ -243,10 +248,46 @@ function getContentType(filePath: string): string {
 }
 
 async function serveStatic(response: ServerResponse, fileName: string): Promise<void> {
-  const filePath = path.join(webRuntime.staticRoot, fileName);
+  await serveStaticAsset(response, fileName);
+}
+
+async function serveStaticAsset(
+  response: ServerResponse,
+  relativePath: string,
+  options: { headOnly?: boolean } = {},
+): Promise<void> {
+  const filePath = path.resolve(webRuntime.staticRoot, relativePath);
+
+  if (!isSafeStaticAssetPath(relativePath)) {
+    response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+    response.end("Not found");
+    return;
+  }
+
   const content = await readFile(filePath);
   response.writeHead(200, { "content-type": getContentType(filePath) });
+
+  if (options.headOnly) {
+    response.end();
+    return;
+  }
+
   response.end(content);
+}
+
+function isSafeStaticAssetPath(relativePath: string): boolean {
+  if (!relativePath) {
+    return false;
+  }
+
+  const filePath = path.resolve(webRuntime.staticRoot, relativePath);
+  const staticRoot = path.resolve(webRuntime.staticRoot);
+
+  if (filePath === staticRoot || !filePath.startsWith(`${staticRoot}${path.sep}`)) {
+    return false;
+  }
+
+  return existsSync(filePath);
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
@@ -428,6 +469,7 @@ async function handleGenerate(request: IncomingMessage, response: ServerResponse
   const body = (await readJsonBody(request)) as {
     imageDataUrl?: string;
     profile?: string;
+    templateId?: string;
     size?: number;
     brushSize?: number;
     imageScalePercent?: number;
@@ -468,10 +510,22 @@ async function handleGenerate(request: IncomingMessage, response: ServerResponse
   const imageScalePercent = normalizeImageScalePercent(body.imageScalePercent);
   const imageOffsetXPercent = normalizeImageOffsetPercent(body.imageOffsetXPercent);
   const imageOffsetYPercent = normalizeImageOffsetPercent(body.imageOffsetYPercent);
+  const template = getDrawingTemplateDefinition(body.templateId ?? "none");
+
+  if (!template) {
+    json(response, 400, { error: `Unknown drawing template: ${body.templateId}` });
+    return;
+  }
+
   const profile = {
     ...baseProfile,
     brushSize: normalizeBrushSize(body.brushSize, baseProfile.brushSize),
   };
+  const drawingMask = await loadDrawingTemplateMask(
+    template.id,
+    profile.canvasWidth,
+    profile.canvasHeight,
+  );
 
   const plan = await generateDrawPlan(
     decodeDataUrl(body.imageDataUrl),
@@ -482,6 +536,7 @@ async function handleGenerate(request: IncomingMessage, response: ServerResponse
       imageOffsetXPercent,
       imageOffsetYPercent,
       removeBackground: body.removeBackground === true,
+      drawingMask,
     },
   );
 
@@ -491,6 +546,8 @@ async function handleGenerate(request: IncomingMessage, response: ServerResponse
       canvasWidth: profile.canvasWidth,
       canvasHeight: profile.canvasHeight,
       brushSize: profile.brushSize,
+      templateId: template.id,
+      templateLabel: template.label,
       imageScalePercent,
       imageOffsetXPercent,
       imageOffsetYPercent,
@@ -509,6 +566,7 @@ async function handleGenerate(request: IncomingMessage, response: ServerResponse
       estimatedRuntimeMs: plan.estimatedRuntimeMs,
       estimatedRuntimeLabel: formatDuration(plan.estimatedRuntimeMs),
       imageBounds: plan.imageBounds,
+      pathStats: plan.pathStats,
     },
     previewDataUrl: `data:image/png;base64,${plan.previewPng.toString("base64")}`,
     commands: plan.commands,
@@ -747,6 +805,16 @@ async function startManagedExecution(body: {
   );
 
   return snapshotManagedExecution(execution);
+}
+
+function handleDrawingTemplates(response: ServerResponse): void {
+  json(response, 200, {
+    templates: listDrawingTemplates().map((template) => ({
+      ...template,
+      maskUrl: `/${template.maskAssetPath}`,
+      previewUrl: `/${template.previewAssetPath}`,
+    })),
+  });
 }
 
 async function handlePorts(response: ServerResponse): Promise<void> {
@@ -1084,8 +1152,23 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       return;
     }
 
+    if (request.method === "GET" && url.pathname === "/controllerStatus.js") {
+      await serveStatic(response, "controllerStatus.js");
+      return;
+    }
+
     if (request.method === "GET" && url.pathname === "/styles.css") {
       await serveStatic(response, "styles.css");
+      return;
+    }
+
+    if (request.method === "GET" && isSafeStaticAssetPath(url.pathname.slice(1))) {
+      await serveStaticAsset(response, url.pathname.slice(1));
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname.startsWith("/drawing-templates/")) {
+      await serveStaticAsset(response, url.pathname.slice(1));
       return;
     }
 
@@ -1096,6 +1179,11 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
 
     if (request.method === "GET" && url.pathname === "/api/official-palette") {
       handleOfficialPalette(response);
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/drawing-templates") {
+      handleDrawingTemplates(response);
       return;
     }
 
