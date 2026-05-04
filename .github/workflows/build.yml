@@ -4,6 +4,15 @@ on:
   push:
     branches: [ "main" ]
   workflow_dispatch:
+    inputs:
+      wifi_ssid:
+        description: "Wi-Fi hotspot SSID"
+        required: true
+        type: string
+      wifi_password:
+        description: "Wi-Fi hotspot password"
+        required: true
+        type: string
 
 jobs:
   build:
@@ -23,6 +32,9 @@ jobs:
       - name: Build Firmware
         working-directory: ./firmware/esp32
         # 这里指定了我们之前改好的 S3 编译环境
+        env:
+          FRIENDMAKER_WIFI_SSID: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.wifi_ssid || secrets.FRIENDMAKER_WIFI_SSID }}
+          FRIENDMAKER_WIFI_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.wifi_password || secrets.FRIENDMAKER_WIFI_PASSWORD }}
         run: pio run -e esp32-s3-devkitc-1
 
       - name: Upload Bin Files
