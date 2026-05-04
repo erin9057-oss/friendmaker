@@ -4,6 +4,7 @@ const state = {
   activePage: "studio",
   imageDataUrl: null,
   commands: [],
+  resumeCheckpoints: [],
   ports: [],
   selectedPortPath: "",
   missingSelectedPortPath: null,
@@ -61,6 +62,7 @@ const state = {
     brushSize: 3,
     templateCategory: "all",
     templateId: "none",
+    drawStrategy: "fill",
     templateLabel: "无模板（正方形）",
     templates: [],
     imageScalePercent: 100,
@@ -168,6 +170,7 @@ const els = {
   brushSizeSelect: document.getElementById("brush-size-select"),
   templateCategorySelect: document.getElementById("template-category-select"),
   templateSelect: document.getElementById("template-select"),
+  drawStrategySelect: document.getElementById("draw-strategy-select"),
   templatePreviewImage: document.getElementById("template-preview-image"),
   templatePreviewLabel: document.getElementById("template-preview-label"),
   colorModeSelect: document.getElementById("color-mode-select"),
@@ -187,6 +190,7 @@ const els = {
   quickStartButton: document.getElementById("quick-start-button"),
   generateButton: document.getElementById("generate-button"),
   executeButton: document.getElementById("execute-button"),
+  resumeFromCheckpointButton: null,
   pauseExecutionButton: document.getElementById("pause-execution-button"),
   resumeExecutionButton: document.getElementById("resume-execution-button"),
   stopExecutionButton: document.getElementById("stop-execution-button"),
@@ -342,6 +346,12 @@ els.templateSelect.addEventListener("change", () => {
     scheduleStudioPreviewRefresh();
   }
 });
+
+els.drawStrategySelect?.addEventListener("change", () => {
+  state.studio.drawStrategy = els.drawStrategySelect.value === "outline" ? "outline" : "fill";
+  syncStudioUi();
+});
+
 
 els.scaleRange.addEventListener("input", () => {
   setStudioImageScalePercent(els.scaleRange.value);
@@ -505,6 +515,29 @@ els.executeButton.addEventListener("click", async () => {
     logPrefix: `开始发送到设备：${state.selectedPortPath}`,
   });
 });
+
+
+function ensureResumeFromCheckpointButton() {
+  if (els.resumeFromCheckpointButton || !els.executeButton) {
+    return;
+  }
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost";
+  button.id = "resume-from-checkpoint-button";
+  button.textContent = "从最近中心锚点恢复绘制";
+  button.disabled = true;
+
+  els.executeButton.insertAdjacentElement("afterend", button);
+  els.resumeFromCheckpointButton = button;
+
+  button.addEventListener("click", async () => {
+    await resumeStudioFromNearestCheckpoint();
+  });
+}
+
+ensureResumeFromCheckpointButton();
 
 els.pauseExecutionButton.addEventListener("click", async () => {
   await sendStudioExecutionControl("pause", "暂停绘制");
@@ -729,7 +762,7 @@ async function generateStudioCommands({ logPrefix }) {
     applyGeneratedStudioPayload(payload);
     appendLog(
       els.studioLogOutput,
-      `生成完成：${payload.stats.commandCount} 条命令，预计耗时 ${payload.stats.estimatedRuntimeLabel}`,
+      `生成完成：${payload.stats.commandCount} 条命令，预计耗时 ${payload.stats.estimatedRuntimeLabel}；可续传中心锚点 ${Array.isArray(payload.resumeCheckpoints) ? payload.resumeCheckpoints.length : Array.isArray(payload.stats?.resumeCheckpoints) ? payload.stats.resumeCheckpoints.length : Array.isArray(payload.profile?.resumeCheckpoints) ? payload.profile.resumeCheckpoints.length : 0} 个`,
     );
     return true;
   } catch (error) {
@@ -746,6 +779,7 @@ function buildStudioGeneratePayload() {
     size: state.studio.canvasSize,
     brushSize: state.studio.brushSize,
     templateId: state.studio.templateId,
+    drawStrategy: state.studio.drawStrategy,
     imageScalePercent: state.studio.imageScalePercent,
     imageOffsetXPercent: state.studio.imageOffsetXPercent,
     imageOffsetYPercent: state.studio.imageOffsetYPercent,
@@ -780,6 +814,19 @@ async function requestStudioGeneration() {
 
 function applyGeneratedStudioPayload(payload) {
   state.commands = payload.commands;
+  state.resumeSourceCommands = payload.commands.slice();
+  state.resumeCheckpoints = Array.isArray(payload.resumeCheckpoints)
+    ? payload.resumeCheckpoints
+    : Array.isArray(payload.stats?.resumeCheckpoints)
+      ? payload.stats.resumeCheckpoints
+      : [];
+  state.resumeCheckpoints = Array.isArray(payload.resumeCheckpoints)
+    ? payload.resumeCheckpoints
+    : Array.isArray(payload.stats?.resumeCheckpoints)
+      ? payload.stats.resumeCheckpoints
+      : Array.isArray(payload.profile?.resumeCheckpoints)
+        ? payload.profile.resumeCheckpoints
+        : [];
   state.studio.usedColorIndexes = Array.isArray(payload.stats.usedColorIndexes)
     ? payload.stats.usedColorIndexes
     : [];
@@ -791,6 +838,7 @@ function applyGeneratedStudioPayload(payload) {
     ackTimeoutMs: payload.profile.ackTimeoutMs ?? 120000,
     commandRetryCount: payload.profile.commandRetryCount ?? 1,
     templateId: payload.profile.templateId ?? state.studio.templateId,
+    drawStrategy: payload.profile.drawStrategy ?? state.studio.drawStrategy ?? "fill",
     templateLabel: payload.profile.templateLabel ?? state.studio.templateLabel,
   };
   state.studio.brushSize = payload.profile.brushSize ?? state.studio.brushSize;
@@ -965,6 +1013,94 @@ async function refreshStudioPreview() {
     return false;
   }
 }
+
+
+function getCompletedCommandCountForResume() {
+  const completed = Number(state.studio.execution?.completedCommands ?? 0);
+  return Number.isFinite(completed) && completed > 0 ? completed : 0;
+}
+
+function getNearestResumeCheckpoint(completedCommandCount) {
+  const checkpoints = Array.isArray(state.resumeCheckpoints) ? state.resumeCheckpoints : [];
+
+  if (checkpoints.length === 0) {
+    return null;
+  }
+
+  let selected = checkpoints[0] ?? null;
+
+  for (const checkpoint of checkpoints) {
+    const commandIndex = Number(checkpoint.commandIndex ?? 0);
+
+    if (commandIndex <= completedCommandCount) {
+      selected = checkpoint;
+      continue;
+    }
+
+    break;
+  }
+
+  return selected;
+}
+
+function getResumeCommandsFromCheckpoint(checkpoint) {
+  const sourceCommands =
+    Array.isArray(state.resumeSourceCommands) && state.resumeSourceCommands.length > 0
+      ? state.resumeSourceCommands
+      : state.commands;
+
+  const commandIndex = Math.max(0, Number(checkpoint?.commandIndex ?? 0));
+  return sourceCommands.slice(commandIndex);
+}
+
+async function resumeStudioFromNearestCheckpoint() {
+  if (!Array.isArray(state.resumeCheckpoints) || state.resumeCheckpoints.length === 0) {
+    appendLog(els.studioLogOutput, "没有可用的中心锚点。请先重新生成命令。");
+    return;
+  }
+
+  const completedCommandCount = getCompletedCommandCountForResume();
+  const checkpoint = getNearestResumeCheckpoint(completedCommandCount);
+
+  if (!checkpoint) {
+    appendLog(els.studioLogOutput, "没有找到可恢复的中心锚点。");
+    return;
+  }
+
+  const resumeCommands = getResumeCommandsFromCheckpoint(checkpoint);
+
+  if (resumeCommands.length === 0) {
+    appendLog(els.studioLogOutput, "最近锚点之后没有剩余命令。");
+    return;
+  }
+
+  const message =
+    `将从中心锚点恢复：原始第 ${checkpoint.commandIndex} 条命令后，` +
+    `剩余 ${resumeCommands.length} 条命令。\n\n` +
+    "请先在 Switch 里手动确认：\n" +
+    "1. 当前工具是画笔\n" +
+    "2. 笔刷大小和网页一致\n" +
+    "3. 光标位于画布中心\n\n" +
+    "确认后点击确定开始续传。";
+
+  if (!window.confirm(message)) {
+    appendLog(els.studioLogOutput, "已取消续传。");
+    return;
+  }
+
+  state.commands = resumeCommands;
+  els.commandsOutput.value = resumeCommands.join("\n");
+
+  appendLog(
+    els.studioLogOutput,
+    `开始续传：从中心锚点 ${checkpoint.index ?? "-"} 恢复，原始第 ${checkpoint.commandIndex} 条命令后，剩余 ${resumeCommands.length} 条命令。`,
+  );
+
+  await executeStudioCommands({
+    logPrefix: `从中心锚点续传到设备：${state.selectedPortPath}`,
+  });
+}
+
 
 async function executeStudioCommands({ logPrefix }) {
   if (!state.commands.length) {
@@ -2221,6 +2357,15 @@ function syncStudioColorCountOptions() {
 }
 
 function syncStudioUi() {
+  if (els.resumeFromCheckpointButton) {
+    const hasResumeCheckpoints =
+      Array.isArray(state.resumeCheckpoints) && state.resumeCheckpoints.length > 0;
+    const hasProgress = Number(state.studio.execution?.completedCommands ?? 0) > 0;
+    els.resumeFromCheckpointButton.disabled =
+      state.studio.busy || !hasResumeCheckpoints || !hasProgress;
+  }
+
+
   const hasPort = Boolean(state.selectedPortPath);
   const controllerReady = isControllerReadyForStudio();
   const hasImage = Boolean(state.imageDataUrl);
@@ -2234,6 +2379,9 @@ function syncStudioUi() {
   syncStudioTemplateOptions();
   els.templateCategorySelect.value = state.studio.templateCategory;
   els.templateSelect.value = state.studio.templateId;
+  if (els.drawStrategySelect) {
+    els.drawStrategySelect.value = state.studio.drawStrategy ?? "fill";
+  }
   renderStudioTemplatePreview();
   void updatePreviewTemplateOverlay();
   els.scaleRange.value = String(state.studio.imageScalePercent);
@@ -2276,6 +2424,9 @@ function syncStudioUi() {
   els.brushSizeSelect.disabled = state.studio.busy || executionActive;
   els.templateCategorySelect.disabled = state.studio.busy || executionActive;
   els.templateSelect.disabled = state.studio.busy || executionActive;
+  if (els.drawStrategySelect) {
+    els.drawStrategySelect.disabled = state.studio.busy || executionActive;
+  }
   els.scaleRange.disabled = state.studio.busy || executionActive;
   els.scaleInput.disabled = state.studio.busy || executionActive;
   els.offsetXRange.disabled = state.studio.busy || executionActive;

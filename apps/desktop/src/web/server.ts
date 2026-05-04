@@ -470,6 +470,7 @@ async function handleGenerate(request: IncomingMessage, response: ServerResponse
     imageDataUrl?: string;
     profile?: string;
     templateId?: string;
+    drawStrategy?: string;
     size?: number;
     brushSize?: number;
     imageScalePercent?: number;
@@ -517,6 +518,8 @@ async function handleGenerate(request: IncomingMessage, response: ServerResponse
     return;
   }
 
+  const drawStrategy = body.drawStrategy === "outline" ? "outline" : "fill";
+
   const profile = {
     ...baseProfile,
     brushSize: normalizeBrushSize(body.brushSize, baseProfile.brushSize),
@@ -537,6 +540,7 @@ async function handleGenerate(request: IncomingMessage, response: ServerResponse
       imageOffsetYPercent,
       removeBackground: body.removeBackground === true,
       drawingMask,
+      drawStrategy,
     },
   );
 
@@ -548,6 +552,7 @@ async function handleGenerate(request: IncomingMessage, response: ServerResponse
       brushSize: profile.brushSize,
       templateId: template.id,
       templateLabel: template.label,
+      drawStrategy,
       imageScalePercent,
       imageOffsetXPercent,
       imageOffsetYPercent,
@@ -567,6 +572,7 @@ async function handleGenerate(request: IncomingMessage, response: ServerResponse
       estimatedRuntimeLabel: formatDuration(plan.estimatedRuntimeMs),
       imageBounds: plan.imageBounds,
       pathStats: plan.pathStats,
+      resumeCheckpoints: plan.resumeCheckpoints,
     },
     previewDataUrl: `data:image/png;base64,${plan.previewPng.toString("base64")}`,
     commands: plan.commands,

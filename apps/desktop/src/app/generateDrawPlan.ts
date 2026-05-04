@@ -1,11 +1,22 @@
 import type { ImageSource } from "../image/loadImage.js";
 import { createBrushGrid, gridCellBounds, isGridCellInBounds } from "../brushGrid.js";
 import { pixelizeImage } from "../image/pixelize.js";
+import { createOutlinePixelMap } from "../image/outlinePixelMap.js";
 import { renderPreviewToBuffer } from "../image/renderPreview.js";
 import { estimateRuntimeMs, generateScanlineCommands, type PathStrategy } from "../path/scanline.js";
 import { serializeCommands } from "../protocol/serializer.js";
-import type { DrawCommand } from "../protocol/commands.js";
+import { moveCommand, type DrawCommand } from "../protocol/commands.js";
 import type { CanvasBounds, DrawingMask, DrawingProfile, PixelMap } from "../types.js";
+
+export type DrawStrategy = "fill" | "outline";
+
+export interface ResumeCheckpoint {
+  index: number;
+  commandIndex: number;
+  x: number;
+  y: number;
+  label: string;
+}
 
 export interface DrawPlanPathStats {
   lineRunCount: number;
@@ -25,6 +36,7 @@ export interface DrawPlan {
   previewPng: Buffer;
   imageBounds: CanvasBounds | null;
   pathStats: DrawPlanPathStats;
+  resumeCheckpoints: ResumeCheckpoint[];
 }
 
 export async function generateDrawPlan(
@@ -38,13 +50,41 @@ export async function generateDrawPlan(
     removeBackground?: boolean;
     drawingMask?: DrawingMask | null;
     pathStrategy?: PathStrategy;
+    drawStrategy?: DrawStrategy;
   },
 ): Promise<DrawPlan> {
-  const { pixelMap, usedColorIndexes } = await pixelizeImage(imageSource, profile, options);
+  const pixelization = await pixelizeImage(imageSource, profile, options);
+  const outlineOptions =
+    profile.brushSize <= 1
+      ? {
+          largeComponentMinSize: 160,
+          minOutlineSpan: 20,
+          minDensity: 0.6,
+          maxBoundaryRatio: 0.32,
+        }
+      : {
+          largeComponentMinSize: Math.max(160, profile.brushSize * profile.brushSize * 5),
+          minOutlineSpan: Math.max(20, profile.brushSize * 3),
+          minDensity: 0.58,
+          maxBoundaryRatio: 0.34,
+        };
+
+  const pixelMap =
+    options?.drawStrategy === "outline"
+      ? createOutlinePixelMap(pixelization.pixelMap, outlineOptions)
+      : pixelization.pixelMap;
+  const usedColorIndexes = getUsedColorIndexes(pixelMap);
   const previewPng = await renderPreviewToBuffer(pixelMap, profile, previewScale);
-  const drawCommands = generateScanlineCommands(pixelMap, profile, options?.pathStrategy);
+  const pathStrategy =
+    options?.pathStrategy ?? (options?.drawStrategy === "outline" ? "runs" : "scanline");
+
+  const rawDrawCommands = generateScanlineCommands(pixelMap, profile, pathStrategy);
+  const drawCommands = insertCenterResumeAnchors(rawDrawCommands, profile, {
+    intervalMs: 30 * 60 * 1000,
+  });
   const imageBounds = calculateCanvasBounds(pixelMap, profile);
   const pathStats = calculatePathStats(drawCommands);
+  const resumeCheckpoints = calculateResumeCheckpoints(drawCommands, profile);
   const paletteHexes = Array.from(
     pixelMap
       .flatMap((row) =>
@@ -68,7 +108,20 @@ export async function generateDrawPlan(
     previewPng,
     imageBounds,
     pathStats,
+    resumeCheckpoints,
   };
+}
+
+function getUsedColorIndexes(pixelMap: PixelMap): number[] {
+  return Array.from(
+    new Set(
+      pixelMap.flatMap((row) =>
+        row
+          .filter((pixel) => pixel.alpha > 0 && pixel.colorIndex >= 0)
+          .map((pixel) => pixel.colorIndex),
+      ),
+    ),
+  ).sort((left, right) => left - right);
 }
 
 function countDrawablePixels(pixelMap: PixelMap): number {
@@ -116,6 +169,182 @@ export function calculateCanvasBounds(pixelMap: PixelMap, profile: DrawingProfil
     maxX,
     maxY,
   };
+}
+
+interface CenterResumeAnchorOptions {
+  intervalMs: number;
+}
+
+function estimateSingleCommandRuntimeMs(
+  command: DrawCommand,
+  profile: DrawingProfile,
+  timing: { buttonPressMs: number; inputDelayMs: number; homeMs: number },
+): number {
+  switch (command.type) {
+    case "inputConfig":
+      return 0;
+    case "home":
+      return timing.homeMs * 2 + timing.inputDelayMs;
+    case "move":
+      return (Math.abs(command.dx) + Math.abs(command.dy)) *
+        (timing.buttonPressMs + timing.inputDelayMs);
+    case "line":
+      return (Math.abs(command.dx) + Math.abs(command.dy) + 1) *
+        (timing.buttonPressMs + timing.inputDelayMs);
+    case "draw":
+    case "press":
+      return timing.buttonPressMs + timing.inputDelayMs;
+    case "color":
+      return profile.colorChangeDuration;
+    case "paletteConfig":
+      return profile.colorChangeDuration * 6;
+    case "basicPaletteConfig":
+      return profile.colorChangeDuration * 4;
+    case "basicPaletteReset":
+      return timing.inputDelayMs;
+    case "wait":
+      return command.ms;
+    case "pause":
+    case "resume":
+    case "end":
+      return timing.inputDelayMs;
+    default:
+      return 0;
+  }
+}
+
+function insertCenterResumeAnchors(
+  commands: DrawCommand[],
+  profile: DrawingProfile,
+  options: CenterResumeAnchorOptions,
+): DrawCommand[] {
+  const center = {
+    x: Math.floor(profile.canvasWidth / 2),
+    y: Math.floor(profile.canvasHeight / 2),
+  };
+
+  let current = { ...center };
+  let elapsedSinceAnchorMs = 0;
+  let timing = {
+    buttonPressMs: profile.buttonPressDuration,
+    inputDelayMs: profile.inputDelay,
+    homeMs: profile.homeDuration,
+  };
+
+  const result: DrawCommand[] = [];
+
+  for (const command of commands) {
+    result.push(command);
+
+    const commandRuntimeMs = estimateSingleCommandRuntimeMs(command, profile, timing);
+
+    if (command.type === "inputConfig") {
+      timing = {
+        buttonPressMs: command.buttonPressMs,
+        inputDelayMs: command.inputDelayMs,
+        homeMs: command.homeMs,
+      };
+    }
+
+    if (command.type === "home") {
+      current = { x: 0, y: 0 };
+    }
+
+    if (command.type === "move" || command.type === "line") {
+      current = {
+        x: current.x + command.dx,
+        y: current.y + command.dy,
+      };
+    }
+
+    elapsedSinceAnchorMs += commandRuntimeMs;
+
+    if (command.type === "end") {
+      continue;
+    }
+
+    if (elapsedSinceAnchorMs < options.intervalMs) {
+      continue;
+    }
+
+    if (current.x === center.x && current.y === center.y) {
+      elapsedSinceAnchorMs = 0;
+      continue;
+    }
+
+    const toCenterDx = center.x - current.x;
+    const toCenterDy = center.y - current.y;
+    const backDx = current.x - center.x;
+    const backDy = current.y - center.y;
+
+    // Normal execution:
+    //   move to center -> checkpoint can resume here -> move back -> continue.
+    // Resume execution:
+    //   user manually places cursor at center, then starts from the move-back command.
+    result.push(moveCommand(toCenterDx, toCenterDy));
+    result.push(moveCommand(backDx, backDy));
+
+    elapsedSinceAnchorMs = 0;
+  }
+
+  return result;
+}
+
+export function calculateResumeCheckpoints(
+  commands: DrawCommand[],
+  profile: DrawingProfile,
+): ResumeCheckpoint[] {
+  const center = {
+    x: Math.floor(profile.canvasWidth / 2),
+    y: Math.floor(profile.canvasHeight / 2),
+  };
+
+  let current = { ...center };
+  const checkpoints: ResumeCheckpoint[] = [
+    {
+      index: 0,
+      commandIndex: 0,
+      x: center.x,
+      y: center.y,
+      label: "起点：请手动确认光标在画布中心",
+    },
+  ];
+
+  const pushCheckpoint = (commandIndex: number, label: string) => {
+    const previous = checkpoints[checkpoints.length - 1];
+
+    if (previous?.commandIndex === commandIndex) {
+      return;
+    }
+
+    checkpoints.push({
+      index: checkpoints.length,
+      commandIndex,
+      x: current.x,
+      y: current.y,
+      label,
+    });
+  };
+
+  commands.forEach((command, index) => {
+    switch (command.type) {
+      case "move":
+      case "line":
+        current = {
+          x: current.x + command.dx,
+          y: current.y + command.dy,
+        };
+        break;
+      default:
+        break;
+    }
+
+    if (current.x === center.x && current.y === center.y) {
+      pushCheckpoint(index + 1, `中心锚点：第 ${index + 1} 条命令后`);
+    }
+  });
+
+  return checkpoints;
 }
 
 export function calculatePathStats(commands: DrawCommand[]): DrawPlanPathStats {
