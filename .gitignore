@@ -7,3 +7,7 @@ coverage
 tmp
 *.tsbuildinfo
 firmware/esp32/.pio/
+
+# Local web UI backup files
+apps/desktop/src/web/static/app.local-backup.js
+apps/desktop/src/web/static/*.local-backup.js
