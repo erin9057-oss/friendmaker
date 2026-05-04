@@ -1050,7 +1050,15 @@ function getResumeCommandsFromCheckpoint(checkpoint) {
       : state.commands;
 
   const commandIndex = Math.max(0, Number(checkpoint?.commandIndex ?? 0));
-  return sourceCommands.slice(commandIndex);
+  const tailCommands = sourceCommands.slice(commandIndex);
+
+  // Recovery may happen after ESP32 reconnect or reset. Re-send CFG INPUT so
+  // button/input timings are deterministic before continuing from the centre anchor.
+  const firstCommand = sourceCommands[0] ?? "";
+  const shouldPrependInputConfig =
+    commandIndex > 0 && typeof firstCommand === "string" && firstCommand.startsWith("CFG INPUT ");
+
+  return shouldPrependInputConfig ? [firstCommand, ...tailCommands] : tailCommands;
 }
 
 async function resumeStudioFromNearestCheckpoint() {
@@ -1091,9 +1099,15 @@ async function resumeStudioFromNearestCheckpoint() {
   state.commands = resumeCommands;
   els.commandsOutput.value = resumeCommands.join("\n");
 
+  const sourceCommandCount =
+    Array.isArray(state.resumeSourceCommands) && state.resumeSourceCommands.length > 0
+      ? state.resumeSourceCommands.length
+      : state.commands.length;
+  const originalRemainingCommandCount = Math.max(0, sourceCommandCount - Number(checkpoint.commandIndex ?? 0));
+
   appendLog(
     els.studioLogOutput,
-    `开始续传：从中心锚点 ${checkpoint.index ?? "-"} 恢复，原始第 ${checkpoint.commandIndex} 条命令后，剩余 ${resumeCommands.length} 条命令。`,
+    `开始续传：从中心锚点 ${checkpoint.index ?? "-"} 恢复，原始进度 ${checkpoint.commandIndex}/${sourceCommandCount}，原始剩余 ${originalRemainingCommandCount} 条命令，实际发送 ${resumeCommands.length} 条命令。`,
   );
 
   await executeStudioCommands({

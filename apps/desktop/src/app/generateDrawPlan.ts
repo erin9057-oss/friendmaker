@@ -80,7 +80,9 @@ export async function generateDrawPlan(
 
   const rawDrawCommands = generateScanlineCommands(pixelMap, profile, pathStrategy);
   const drawCommands = insertCenterResumeAnchors(rawDrawCommands, profile, {
-    intervalMs: 30 * 60 * 1000,
+    targetIntervalMs: 30 * 60 * 1000,
+    maxDelayMs: 15 * 60 * 1000,
+    maxAnchorDistance: 80,
   });
   const imageBounds = calculateCanvasBounds(pixelMap, profile);
   const pathStats = calculatePathStats(drawCommands);
@@ -172,7 +174,9 @@ export function calculateCanvasBounds(pixelMap: PixelMap, profile: DrawingProfil
 }
 
 interface CenterResumeAnchorOptions {
-  intervalMs: number;
+  targetIntervalMs: number;
+  maxDelayMs: number;
+  maxAnchorDistance: number;
 }
 
 function estimateSingleCommandRuntimeMs(
@@ -232,6 +236,9 @@ function insertCenterResumeAnchors(
   };
 
   const result: DrawCommand[] = [];
+  const targetIntervalMs = Math.max(1, options.targetIntervalMs);
+  const maxDelayMs = Math.max(0, options.maxDelayMs);
+  const maxAnchorDistance = Math.max(0, options.maxAnchorDistance);
 
   for (const command of commands) {
     result.push(command);
@@ -263,12 +270,22 @@ function insertCenterResumeAnchors(
       continue;
     }
 
-    if (elapsedSinceAnchorMs < options.intervalMs) {
+    // Natural centre pass: this is already a free recovery point.
+    // Reset the timer so we only add paid centre anchors for long gaps.
+    if (current.x === center.x && current.y === center.y) {
+      elapsedSinceAnchorMs = 0;
       continue;
     }
 
-    if (current.x === center.x && current.y === center.y) {
-      elapsedSinceAnchorMs = 0;
+    if (elapsedSinceAnchorMs < targetIntervalMs) {
+      continue;
+    }
+
+    const distanceToCenter = Math.abs(center.x - current.x) + Math.abs(center.y - current.y);
+    const shouldInsertLowCostAnchor = distanceToCenter <= maxAnchorDistance;
+    const shouldForceAnchor = elapsedSinceAnchorMs >= targetIntervalMs + maxDelayMs;
+
+    if (!shouldInsertLowCostAnchor && !shouldForceAnchor) {
       continue;
     }
 
@@ -278,9 +295,9 @@ function insertCenterResumeAnchors(
     const backDy = current.y - center.y;
 
     // Normal execution:
-    //   move to center -> checkpoint can resume here -> move back -> continue.
+    //   move to centre -> checkpoint can resume here -> move back -> continue.
     // Resume execution:
-    //   user manually places cursor at center, then starts from the move-back command.
+    //   user manually places cursor at centre, then starts from the move-back command.
     result.push(moveCommand(toCenterDx, toCenterDy));
     result.push(moveCommand(backDx, backDy));
 
