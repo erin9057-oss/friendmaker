@@ -277,6 +277,16 @@ function insertCenterResumeAnchors(
       continue;
     }
 
+    // Do not inject centre anchors during palette configuration or colour
+    // selection. Those commands may temporarily move focus into UI panels.
+    // Anchors are only safe immediately after canvas drawing/movement actions.
+    const canInsertCanvasAnchor =
+      command.type === "move" || command.type === "line" || command.type === "draw";
+
+    if (!canInsertCanvasAnchor) {
+      continue;
+    }
+
     if (elapsedSinceAnchorMs < targetIntervalMs) {
       continue;
     }

@@ -328,6 +328,239 @@ interface PixelRun {
   end: Pixel;
 }
 
+interface PixelRunBounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+interface PixelRunComponent {
+  runs: PixelRun[];
+  bounds: PixelRunBounds;
+}
+
+interface OrderedRunResult {
+  pixels: Pixel[];
+  endPosition: { x: number; y: number };
+  travelDistance: number;
+}
+
+function getRunBounds(run: PixelRun): PixelRunBounds {
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  for (const pixel of run.pixels) {
+    minX = Math.min(minX, pixel.x);
+    minY = Math.min(minY, pixel.y);
+    maxX = Math.max(maxX, pixel.x);
+    maxY = Math.max(maxY, pixel.y);
+  }
+
+  return { minX, minY, maxX, maxY };
+}
+
+function mergeRunBounds(left: PixelRunBounds, right: PixelRunBounds): PixelRunBounds {
+  return {
+    minX: Math.min(left.minX, right.minX),
+    minY: Math.min(left.minY, right.minY),
+    maxX: Math.max(left.maxX, right.maxX),
+    maxY: Math.max(left.maxY, right.maxY),
+  };
+}
+
+function areRunBoundsNear(left: PixelRunBounds, right: PixelRunBounds, gap: number): boolean {
+  return !(
+    left.maxX + gap < right.minX ||
+    right.maxX + gap < left.minX ||
+    left.maxY + gap < right.minY ||
+    right.maxY + gap < left.minY
+  );
+}
+
+function collectRunComponents(runs: PixelRun[], gap: number): PixelRunComponent[] {
+  if (runs.length === 0) {
+    return [];
+  }
+
+  const boundsByRun = runs.map(getRunBounds);
+  const visited = new Set<number>();
+  const components: PixelRunComponent[] = [];
+
+  for (let index = 0; index < runs.length; index += 1) {
+    if (visited.has(index)) {
+      continue;
+    }
+
+    const stack = [index];
+    visited.add(index);
+    const componentRuns: PixelRun[] = [];
+    let componentBounds = boundsByRun[index]!;
+
+    while (stack.length > 0) {
+      const currentIndex = stack.pop()!;
+      const currentRun = runs[currentIndex];
+      const currentBounds = boundsByRun[currentIndex];
+
+      if (!currentRun || !currentBounds) {
+        continue;
+      }
+
+      componentRuns.push(currentRun);
+      componentBounds = mergeRunBounds(componentBounds, currentBounds);
+
+      for (let nextIndex = 0; nextIndex < runs.length; nextIndex += 1) {
+        if (visited.has(nextIndex)) {
+          continue;
+        }
+
+        const nextBounds = boundsByRun[nextIndex];
+
+        if (!nextBounds) {
+          continue;
+        }
+
+        if (areRunBoundsNear(componentBounds, nextBounds, gap)) {
+          visited.add(nextIndex);
+          stack.push(nextIndex);
+        }
+      }
+    }
+
+    components.push({
+      runs: componentRuns,
+      bounds: componentBounds,
+    });
+  }
+
+  return components;
+}
+
+function distanceToRunEndpoint(
+  run: PixelRun,
+  current: { x: number; y: number },
+  grid: BrushGrid,
+): number {
+  const start = toCanvasPosition(run.start, grid);
+  const end = toCanvasPosition(run.end, grid);
+
+  return Math.min(
+    Math.abs(start.x - current.x) + Math.abs(start.y - current.y),
+    Math.abs(end.x - current.x) + Math.abs(end.y - current.y),
+  );
+}
+
+function distanceToRunComponent(
+  component: PixelRunComponent,
+  current: { x: number; y: number },
+  grid: BrushGrid,
+): number {
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (const run of component.runs) {
+    bestDistance = Math.min(bestDistance, distanceToRunEndpoint(run, current, grid));
+  }
+
+  return bestDistance;
+}
+
+function orderRunsGreedy(
+  runs: PixelRun[],
+  current: { x: number; y: number },
+  grid: BrushGrid,
+): OrderedRunResult {
+  const remaining = runs.slice();
+  const orderedPixels: Pixel[] = [];
+  let position = current;
+  let travelDistance = 0;
+
+  while (remaining.length > 0) {
+    let bestIndex = 0;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    remaining.forEach((run, index) => {
+      const distance = distanceToRunEndpoint(run, position, grid);
+
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
+      }
+    });
+
+    const [run] = remaining.splice(bestIndex, 1);
+    if (!run) {
+      break;
+    }
+
+    const orderedRun = chooseRunDirection(run, position, grid);
+    const first = orderedRun[0];
+    const last = orderedRun[orderedRun.length - 1];
+
+    if (first) {
+      const firstPosition = toCanvasPosition(first, grid);
+      travelDistance += Math.abs(firstPosition.x - position.x) + Math.abs(firstPosition.y - position.y);
+    }
+
+    orderedPixels.push(...orderedRun);
+
+    if (last) {
+      position = toCanvasPosition(last, grid);
+    }
+  }
+
+  return {
+    pixels: orderedPixels,
+    endPosition: position,
+    travelDistance,
+  };
+}
+
+function orderRunComponentsGreedy(
+  runs: PixelRun[],
+  current: { x: number; y: number },
+  grid: BrushGrid,
+  profile: DrawingProfile,
+): OrderedRunResult {
+  const componentGap = Math.max(3, profile.brushSize * 2);
+  const remaining = collectRunComponents(runs, componentGap);
+  const orderedPixels: Pixel[] = [];
+  let position = current;
+  let travelDistance = 0;
+
+  while (remaining.length > 0) {
+    let bestIndex = 0;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    remaining.forEach((component, index) => {
+      const distance = distanceToRunComponent(component, position, grid);
+
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
+      }
+    });
+
+    const [component] = remaining.splice(bestIndex, 1);
+
+    if (!component) {
+      break;
+    }
+
+    const orderedComponent = orderRunsGreedy(component.runs, position, grid);
+    orderedPixels.push(...orderedComponent.pixels);
+    travelDistance += orderedComponent.travelDistance;
+    position = orderedComponent.endPosition;
+  }
+
+  return {
+    pixels: orderedPixels,
+    endPosition: position,
+    travelDistance,
+  };
+}
+
 function buildHorizontalRuns(pixels: Pixel[]): PixelRun[] {
   const rows = new Map<number, Pixel[]>();
 
@@ -485,6 +718,7 @@ function getRunOptimizedPixels(
   pixels: Pixel[],
   current: { x: number; y: number },
   grid: BrushGrid,
+  profile: DrawingProfile,
 ): Pixel[] {
   if (pixels.length <= 1) {
     return pixels;
@@ -493,50 +727,18 @@ function getRunOptimizedPixels(
   const horizontalRuns = buildHorizontalRuns(pixels);
   const verticalRuns = buildVerticalRuns(pixels);
 
-  const selectedRuns =
-    estimateRunPlanDistance(horizontalRuns, current, grid) <=
-    estimateRunPlanDistance(verticalRuns, current, grid)
-      ? horizontalRuns
-      : verticalRuns;
+  const candidates = [
+    orderRunComponentsGreedy(horizontalRuns, current, grid, profile),
+    orderRunComponentsGreedy(verticalRuns, current, grid, profile),
+    orderRunsGreedy(horizontalRuns, current, grid),
+    orderRunsGreedy(verticalRuns, current, grid),
+  ];
 
-  const remaining = selectedRuns.slice();
-  const orderedPixels: Pixel[] = [];
-  let position = current;
+  const best = candidates.reduce((selected, candidate) =>
+    candidate.travelDistance < selected.travelDistance ? candidate : selected,
+  );
 
-  while (remaining.length > 0) {
-    let bestIndex = 0;
-    let bestDistance = Number.POSITIVE_INFINITY;
-
-    remaining.forEach((run, index) => {
-      const start = toCanvasPosition(run.start, grid);
-      const end = toCanvasPosition(run.end, grid);
-
-      const distance = Math.min(
-        Math.abs(start.x - position.x) + Math.abs(start.y - position.y),
-        Math.abs(end.x - position.x) + Math.abs(end.y - position.y),
-      );
-
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        bestIndex = index;
-      }
-    });
-
-    const [run] = remaining.splice(bestIndex, 1);
-    if (!run) {
-      break;
-    }
-
-    const orderedRun = chooseRunDirection(run, position, grid);
-    orderedPixels.push(...orderedRun);
-
-    const last = orderedRun[orderedRun.length - 1];
-    if (last) {
-      position = toCanvasPosition(last, grid);
-    }
-  }
-
-  return orderedPixels;
+  return best.pixels;
 }
 
 
@@ -556,7 +758,7 @@ function getOrderedPixelsForColor(
   }
 
   if (pathStrategy === "runs") {
-    return getRunOptimizedPixels(pixels, current, grid);
+    return getRunOptimizedPixels(pixels, current, grid, profile);
   }
 
   if (profile.brushSize === 1) {
