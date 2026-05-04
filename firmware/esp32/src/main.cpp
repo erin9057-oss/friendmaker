@@ -27,11 +27,20 @@ ControllerTransport &transport = usbTransport;
 SwitchController controller(transport);
 SequencedCommandCache sequencedCommandCache;
 
-// ==========================================
-// 【网络配置】修改为你的手机热点名称和密码
-// ==========================================
-const char* ssid = "REDACTED_WIFI_SSID";
-const char* password = "REDACTED_WIFI_PASSWORD";
+// Wi-Fi credentials are injected at build time via PlatformIO build flags.
+// Example:
+//   -DFRIENDMAKER_WIFI_SSID=\"YourHotspot\"
+//   -DFRIENDMAKER_WIFI_PASSWORD=\"YourPassword\"
+#ifndef FRIENDMAKER_WIFI_SSID
+#define FRIENDMAKER_WIFI_SSID ""
+#endif
+
+#ifndef FRIENDMAKER_WIFI_PASSWORD
+#define FRIENDMAKER_WIFI_PASSWORD ""
+#endif
+
+const char* ssid = FRIENDMAKER_WIFI_SSID;
+const char* password = FRIENDMAKER_WIFI_PASSWORD;
 WiFiServer server(8080);
 WiFiClient client;
 
@@ -132,6 +141,13 @@ void setup() {
   
   // 启动 USB 手柄功能
   controller.begin();
+
+  if (String(ssid).length() == 0) {
+    Serial.println("ERR wifi_ssid_missing: set FRIENDMAKER_WIFI_SSID at build time");
+    while (true) {
+      delay(1000);
+    }
+  }
 
   // 连接手机热点
   WiFi.mode(WIFI_STA);
