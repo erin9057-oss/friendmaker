@@ -60,7 +60,7 @@ export const DRAWING_TEMPLATES: DrawingTemplateDefinition[] = [
   },
   {
     id: "tops-short-d",
-    label: "短袖连衣短裙",
+    label: "长袖T恤",
     category: "tops",
     maskAssetPath: "drawing-templates/masks/tops-short-d.png",
     previewAssetPath: "drawing-templates/previews/tops-short-d.png",
