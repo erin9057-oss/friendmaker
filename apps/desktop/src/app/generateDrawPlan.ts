@@ -7,6 +7,7 @@ import { estimateRuntimeMs, generateScanlineCommands, type PathStrategy } from "
 import { serializeCommands } from "../protocol/serializer.js";
 import { moveCommand, type DrawCommand } from "../protocol/commands.js";
 import type { CanvasBounds, DrawingMask, DrawingProfile, PixelMap } from "../types.js";
+import { compensateGamePaletteHexes } from "../image/gamePaletteCompensation.js";
 
 export type DrawStrategy = "fill" | "outline";
 
@@ -87,7 +88,7 @@ export async function generateDrawPlan(
   const imageBounds = calculateCanvasBounds(pixelMap, profile);
   const pathStats = calculatePathStats(drawCommands);
   const resumeCheckpoints = calculateResumeCheckpoints(drawCommands, profile);
-  const paletteHexes = Array.from(
+  const rawPaletteHexes = Array.from(
     pixelMap
       .flatMap((row) =>
         row
@@ -99,6 +100,9 @@ export async function generateDrawPlan(
   )
     .sort((a, b) => a[0] - b[0])
     .map(([, colorHex]) => colorHex);
+
+  const paletteHexes =
+    profile.colorMode === "palette" ? compensateGamePaletteHexes(rawPaletteHexes) : rawPaletteHexes;
 
   return {
     commands: serializeCommands(drawCommands),
