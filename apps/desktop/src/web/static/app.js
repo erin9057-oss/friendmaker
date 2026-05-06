@@ -130,6 +130,7 @@ const state = {
   },
   controller: {
     busy: false,
+    customCommandBusy: false,
     target: "serial",
     status: {
       tone: "idle",
@@ -255,6 +256,7 @@ const els = {
   controllerActionButtons: [...document.querySelectorAll("[data-controller-action]")],
   controllerCustomCommands: document.getElementById("controller-custom-commands"),
   controllerSendCustomButton: document.getElementById("controller-send-custom-button"),
+  controllerStopCustomButton: null,
   controllerStatusCard: document.getElementById("controller-status-card"),
   controllerStatusPill: document.getElementById("controller-status-pill"),
   controllerStatusTitle: document.getElementById("controller-status-title"),
@@ -630,6 +632,100 @@ function ensureResumeFromCheckpointButton() {
 }
 
 ensureResumeFromCheckpointButton();
+
+function ensureControllerStopCustomButton() {
+  if (els.controllerStopCustomButton || !els.controllerSendCustomButton) {
+    return;
+  }
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost";
+  button.id = "controller-stop-custom-button";
+  button.textContent = "中断自定义命令";
+  button.disabled = true;
+
+  els.controllerSendCustomButton.insertAdjacentElement("afterend", button);
+  els.controllerStopCustomButton = button;
+
+  button.addEventListener("click", async () => {
+    await stopControllerCustomCommands();
+  });
+}
+
+function setControllerCustomCommandBusy(busy) {
+  state.controller.customCommandBusy = busy;
+
+  if (els.controllerSendCustomButton) {
+    els.controllerSendCustomButton.disabled = busy;
+  }
+
+  if (els.controllerStopCustomButton) {
+    els.controllerStopCustomButton.disabled = !busy;
+  }
+}
+
+async function stopControllerCustomCommands() {
+  appendLog(els.controllerLogOutput, "正在中断自定义命令...");
+
+  try {
+    const response = await fetch("/api/execution/stop", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.error ?? "中断失败");
+    }
+
+    appendLog(els.controllerLogOutput, "已发送中断请求。");
+  } catch (error) {
+    appendLog(els.controllerLogOutput, `中断失败：${getErrorMessage(error)}`);
+  }
+}
+
+async function pollControllerCustomExecutionUntilDone() {
+  let lastLineCount = 0;
+
+  while (state.controller.customCommandBusy) {
+    const response = await fetch("/api/execution/status");
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.error ?? "读取执行状态失败");
+    }
+
+    const execution = payload.execution ?? payload;
+    const lines = Array.isArray(execution.lines) ? execution.lines : [];
+
+    for (const line of lines.slice(lastLineCount)) {
+      appendLog(els.controllerLogOutput, `[device] ${line}`);
+    }
+
+    lastLineCount = lines.length;
+
+    const status = execution.status ?? "idle";
+
+    if (status === "completed" || status === "failed" || status === "stopped") {
+      if (status === "completed") {
+        appendLog(els.controllerLogOutput, "自定义命令完成。");
+      } else if (status === "stopped") {
+        appendLog(els.controllerLogOutput, "自定义命令已中断。");
+      } else {
+        appendLog(els.controllerLogOutput, `自定义命令失败：${execution.error ?? "unknown error"}`);
+      }
+
+      break;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
+
+
+ensureControllerStopCustomButton();
 
 els.pauseExecutionButton.addEventListener("click", async () => {
   await sendStudioExecutionControl("pause", "暂停绘制");
@@ -1846,11 +1942,52 @@ els.controllerSendCustomButton.addEventListener("click", async () => {
     .filter(Boolean);
 
   if (commands.length === 0) {
-    appendLog(els.controllerLogOutput, "请输入至少一条测试命令。");
+    appendLog(els.controllerLogOutput, "请输入至少一条自定义命令。");
     return;
   }
 
-  await runControllerCommands(commands, "自定义命令");
+  if (!state.selectedPortPath) {
+    appendLog(els.controllerLogOutput, "请先选择或输入 ESP32 Wi-Fi IP。");
+    return;
+  }
+
+  appendLog(els.controllerLogOutput, `自定义命令：${state.selectedPortPath}`);
+  setControllerCustomCommandBusy(true);
+
+  try {
+    const response = await fetch("/api/execution/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        commands,
+        target: "serial",
+        portPath: state.selectedPortPath,
+        baudRate: state.studio.profile.baudRate,
+        ackTimeoutMs: state.studio.profile.ackTimeoutMs,
+        retries: state.studio.profile.commandRetryCount,
+      }),
+    });
+
+    const payload = await response.json();
+
+    if (!response.ok) {
+      applySerialSessionSnapshot(payload.session);
+      throw new Error(payload.error ?? "执行失败");
+    }
+
+    applySerialSessionSnapshot(payload.session);
+    appendLog(
+      els.controllerLogOutput,
+      `自定义命令已开始：${commands.length} 条，可用“中断自定义命令”停止。`,
+    );
+
+    await pollControllerCustomExecutionUntilDone();
+  } catch (error) {
+    appendLog(els.controllerLogOutput, `执行失败：${getErrorMessage(error)}`);
+  } finally {
+    setControllerCustomCommandBusy(false);
+    await loadSerialSessionStatus();
+  }
 });
 
 els.controllerClearLogButton.addEventListener("click", () => {
@@ -3354,7 +3491,12 @@ function forceUsbWifiControllerTestReady() {
   }
 
   if (els.controllerSendCustomButton) {
-    els.controllerSendCustomButton.disabled = !hasPath || state.controller.busy;
+    els.controllerSendCustomButton.disabled =
+      !hasPath || state.controller.busy || state.controller.customCommandBusy;
+  }
+
+  if (els.controllerStopCustomButton) {
+    els.controllerStopCustomButton.disabled = !state.controller.customCommandBusy;
   }
 
   if (Array.isArray(els.controllerActionButtons)) {
