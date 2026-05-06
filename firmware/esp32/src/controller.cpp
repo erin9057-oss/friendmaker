@@ -269,8 +269,10 @@ bool SwitchController::selectColor(int index) {
     }
   }
 
-  if (!pressPaletteMenuButton(transport_, ControllerButton::A) ||
-      !pressPaletteMenuButton(transport_, ControllerButton::B)) {
+  // Pressing A on the selected palette slot applies the colour and returns to
+  // the canvas. Avoid an extra B here to save time and prevent accidental menu
+  // back-outs on states where A already closed the selector.
+  if (!pressPaletteMenuButton(transport_, ControllerButton::A)) {
     return false;
   }
   delay(inputDelayMs_);
