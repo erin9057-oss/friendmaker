@@ -7,6 +7,7 @@ const state = {
   resumeCheckpoints: [],
   ports: [],
   selectedPortPath: "",
+  manualWifiIp: localStorage.getItem("friendmaker.manualWifiIp") ?? "",
   missingSelectedPortPath: null,
   serialSession: {
     connected: false,
@@ -185,6 +186,8 @@ const els = {
   offsetYRange: document.getElementById("offset-y-range"),
   offsetYInput: document.getElementById("offset-y-input"),
   studioPortSelect: document.getElementById("studio-port-select"),
+  studioWifiIpInput: null,
+  controllerWifiIpInput: null,
   refreshPortsButton: document.getElementById("refresh-ports-button"),
   executionHint: document.getElementById("execution-hint"),
   quickStartButton: document.getElementById("quick-start-button"),
@@ -311,6 +314,95 @@ const TEMPLATE_CATEGORY_LABELS = {
   other: "几何 / 特殊",
   base: "默认",
 };
+
+
+function normalizeWifiIpInput(value) {
+  return String(value ?? "").trim();
+}
+
+function setManualWifiIp(value, { logTarget = null } = {}) {
+  const ip = normalizeWifiIpInput(value);
+
+  if (!ip) {
+    return;
+  }
+
+  state.manualWifiIp = ip;
+  state.selectedPortPath = ip;
+  state.missingSelectedPortPath = null;
+  localStorage.setItem("friendmaker.manualWifiIp", ip);
+
+  if (!state.ports.some((port) => port.path === ip)) {
+    state.ports = [
+      { path: ip, label: `${ip} | ESP32-S3 Wi-Fi 节点（手动）` },
+      ...state.ports,
+    ];
+  }
+
+  syncManualWifiInputs();
+  renderPortSelects();
+  syncStudioUi();
+  syncControllerUi();
+
+  if (logTarget) {
+    appendLog(logTarget, `已切换到手动 Wi-Fi IP：${ip}`);
+  }
+}
+
+function syncManualWifiInputs() {
+  const value = state.manualWifiIp || state.selectedPortPath || "";
+
+  if (els.studioWifiIpInput) {
+    els.studioWifiIpInput.value = value;
+  }
+
+  if (els.controllerWifiIpInput) {
+    els.controllerWifiIpInput.value = value;
+  }
+}
+
+function createWifiIpControl(select, inputKey, logTarget) {
+  if (!select || els[inputKey]) {
+    return;
+  }
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "manual-wifi-card";
+  wrapper.innerHTML = `
+    <label>
+      <span>手动 Wi-Fi IP</span>
+      <input class="manual-wifi-input" type="text" inputmode="decimal" placeholder="例如 192.168.150.247" />
+    </label>
+    <button class="ghost manual-wifi-button" type="button">使用此 IP</button>
+  `;
+
+  select.closest("label")?.insertAdjacentElement("afterend", wrapper);
+
+  const input = wrapper.querySelector(".manual-wifi-input");
+  const button = wrapper.querySelector(".manual-wifi-button");
+
+  els[inputKey] = input;
+
+  button?.addEventListener("click", () => {
+    setManualWifiIp(input?.value, { logTarget });
+  });
+
+  input?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      setManualWifiIp(input.value, { logTarget });
+    }
+  });
+}
+
+function ensureManualWifiControls() {
+  createWifiIpControl(els.studioPortSelect, "studioWifiIpInput", els.studioLogOutput);
+  createWifiIpControl(els.controllerPortSelect, "controllerWifiIpInput", els.controllerLogOutput);
+  syncManualWifiInputs();
+}
+
+
+ensureManualWifiControls();
 
 els.pageTabs.forEach((button) => {
   button.addEventListener("click", () => {

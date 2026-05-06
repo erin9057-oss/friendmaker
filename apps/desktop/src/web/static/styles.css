@@ -1739,3 +1739,35 @@ input[type="range"]:focus-visible,
   }
 }
 
+
+.manual-wifi-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid rgba(19, 34, 56, 0.1);
+  border-radius: 18px;
+  background: rgba(19, 34, 56, 0.04);
+}
+
+.manual-wifi-input {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink);
+  font: inherit;
+}
+
+@media (max-width: 720px) {
+  .manual-wifi-card {
+    grid-template-columns: 1fr;
+  }
+
+  .manual-wifi-button {
+    width: 100%;
+  }
+}
