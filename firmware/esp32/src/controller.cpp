@@ -61,6 +61,22 @@ uint8_t scaleChannelToSteps(float value, uint8_t steps) {
   return static_cast<uint8_t>(roundf(clamped * steps));
 }
 
+float mapPaletteEditorValue(float value) {
+  const float clamped = value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value);
+
+  // The game's custom-colour square collapses many low-value colours into
+  // near-black at the bottom. Lift darker colours so greys, navy, brown and
+  // dark red remain visually distinct on the Switch palette.
+  constexpr float darkFloor = 0.18f;
+  constexpr float darkCeiling = 0.72f;
+
+  if (clamped >= darkCeiling) {
+    return clamped;
+  }
+
+  return darkFloor + clamped * ((darkCeiling - darkFloor) / darkCeiling);
+}
+
 HsvColor rgbToHsv(uint8_t red, uint8_t green, uint8_t blue) {
   const float r = static_cast<float>(red) / 255.0f;
   const float g = static_cast<float>(green) / 255.0f;
@@ -269,10 +285,11 @@ bool SwitchController::configurePaletteSlot(int index, uint8_t red, uint8_t gree
   const float hueRatio = hsv.hue <= 0.0f ? 0.0f : ((360.0f - hsv.hue) / 360.0f);
   const uint8_t hueSteps =
       static_cast<uint8_t>(roundf(hueRatio * COLOR_PALETTE_EDITOR_HUE_STEP_COUNT));
+  const float editorValue = mapPaletteEditorValue(hsv.value);
   const uint8_t saturationSteps =
       scaleChannelToSteps(hsv.saturation, COLOR_PALETTE_EDITOR_SATURATION_STEP_COUNT);
   const uint8_t valueDropSteps =
-      scaleChannelToSteps(1.0f - hsv.value, COLOR_PALETTE_EDITOR_VALUE_STEP_COUNT);
+      scaleChannelToSteps(1.0f - editorValue, COLOR_PALETTE_EDITOR_VALUE_STEP_COUNT);
 
   // Palette selection page.
   if (!transport_.pressButton(ControllerButton::Y, buttonPressMs_, inputDelayMs_)) {
@@ -341,10 +358,11 @@ bool SwitchController::configurePaletteSlot(int index, uint8_t red, uint8_t gree
     }
   }
 
-  // Exit editor, apply the slot, then go back to drawing mode.
-  if (!transport_.pressButton(ControllerButton::B, buttonPressMs_, inputDelayMs_) ||
-      !transport_.pressButton(ControllerButton::A, buttonPressMs_, inputDelayMs_) ||
-      !transport_.pressButton(ControllerButton::B, buttonPressMs_, inputDelayMs_)) {
+  // Confirm the custom colour and return directly to the canvas.
+  // In the custom-colour editor, pressing B after moving the selector applies
+  // the edited slot and exits. Do not press A afterwards, because once the
+  // canvas is active A creates an unwanted centre dot.
+  if (!transport_.pressButton(ControllerButton::B, buttonPressMs_, inputDelayMs_)) {
     return false;
   }
   delay(inputDelayMs_);
