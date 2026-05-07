@@ -76,15 +76,32 @@ export async function generateDrawPlan(
       : pixelization.pixelMap;
 
   if (profile.colorMode === "palette") {
+    const targetColorCount = profile.colorCount;
+    const conservativeHighColorMode = targetColorCount >= 32;
+
     pixelMap = optimiseRegionAwarePalette(pixelMap, {
       removeBackground: options?.removeBackground === true,
-      targetColorCount: profile.colorCount,
+      targetColorCount,
       brushSize: profile.brushSize,
       tinyIslandMaxPixels:
-        profile.colorCount <= 16 ? 5 : profile.colorCount <= 32 ? 8 : 12,
+        targetColorCount <= 16
+          ? 5
+          : targetColorCount <= 32
+            ? 1
+            : targetColorCount <= 64
+              ? 2
+              : 3,
       maxMergeDistance:
-        profile.colorCount <= 16 ? 16 : profile.colorCount <= 32 ? 13 : profile.colorCount <= 64 ? 10 : 8,
+        targetColorCount <= 16
+          ? 16
+          : targetColorCount <= 32
+            ? 8
+            : targetColorCount <= 64
+              ? 5
+              : 3,
       protectDarkLineColors: true,
+      conservativeHighColorMode,
+      preserveLocalShading: conservativeHighColorMode,
     });
   }
 
