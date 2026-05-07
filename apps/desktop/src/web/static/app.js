@@ -60,18 +60,18 @@ const state = {
     busy: false,
     target: "serial",
     canvasSize: 256,
-    brushSize: 3,
+    brushSize: 1,
     templateCategory: "all",
     templateId: "none",
-    drawStrategy: "fill",
+    drawStrategy: "outline",
     templateLabel: "无模板（正方形）",
     templates: [],
     imageScalePercent: 100,
     imageOffsetXPercent: 0,
     imageOffsetYPercent: 0,
     previewGuideMode: "none",
-    colorMode: "mono",
-    colorCount: 32,
+    colorMode: "palette",
+    colorCount: 16,
     removeBackground: false,
     usedColorIndexes: [],
     generatedPalette: [],
@@ -1026,7 +1026,7 @@ function applyGeneratedStudioPayload(payload) {
     ackTimeoutMs: payload.profile.ackTimeoutMs ?? 120000,
     commandRetryCount: payload.profile.commandRetryCount ?? 1,
     templateId: payload.profile.templateId ?? state.studio.templateId,
-    drawStrategy: payload.profile.drawStrategy ?? state.studio.drawStrategy ?? "fill",
+    drawStrategy: payload.profile.drawStrategy ?? state.studio.drawStrategy ?? "outline",
     templateLabel: payload.profile.templateLabel ?? state.studio.templateLabel,
   };
   state.studio.brushSize = payload.profile.brushSize ?? state.studio.brushSize;
@@ -2623,7 +2623,7 @@ function syncStudioUi() {
   els.templateCategorySelect.value = state.studio.templateCategory;
   els.templateSelect.value = state.studio.templateId;
   if (els.drawStrategySelect) {
-    els.drawStrategySelect.value = state.studio.drawStrategy ?? "fill";
+    els.drawStrategySelect.value = state.studio.drawStrategy ?? "outline";
   }
   renderStudioTemplatePreview();
   void updatePreviewTemplateOverlay();
