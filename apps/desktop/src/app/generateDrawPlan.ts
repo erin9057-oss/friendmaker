@@ -76,7 +76,16 @@ export async function generateDrawPlan(
       : pixelization.pixelMap;
 
   if (profile.colorMode === "palette") {
-    pixelMap = optimiseRegionAwarePalette(pixelMap);
+    pixelMap = optimiseRegionAwarePalette(pixelMap, {
+      removeBackground: options?.removeBackground === true,
+      targetColorCount: profile.colorCount,
+      brushSize: profile.brushSize,
+      tinyIslandMaxPixels:
+        profile.colorCount <= 16 ? 5 : profile.colorCount <= 32 ? 8 : 12,
+      maxMergeDistance:
+        profile.colorCount <= 16 ? 16 : profile.colorCount <= 32 ? 13 : profile.colorCount <= 64 ? 10 : 8,
+      protectDarkLineColors: true,
+    });
   }
 
   const usedColorIndexes = getUsedColorIndexes(pixelMap);
