@@ -84,8 +84,10 @@ function collectComponent(
 
   visited[startY]![startX] = true;
 
-  while (queue.length > 0) {
-    const current = queue.shift()!;
+  let queueIndex = 0;
+  while (queueIndex < queue.length) {
+    const current = queue[queueIndex]!;
+    queueIndex += 1;
     points.push(current);
 
     if (current.x < minX) minX = current.x;
@@ -199,11 +201,12 @@ function buildOutlineColourStats(pixelMap: PixelMap): OutlineColourStats {
 function shouldKeepNonOutlinedComponent(
   pixelMap: PixelMap,
   component: Component,
+  boundaryPoints: Point[],
   boundaryCount: number,
   options: Required<OutlinePixelMapOptions>,
   colourStats: OutlineColourStats,
 ): boolean {
-  const info = getOutlineComponentRoleInfo(pixelMap, component, boundaryCount, options, colourStats);
+  const info = getOutlineComponentRoleInfo(pixelMap, component, boundaryPoints, boundaryCount, options, colourStats);
   const role = scoreOutlineComponentRole(info);
 
   // 关键：大面积 non-outlined component 默认是填充残块，不再允许靠深色 lineScore 整块保留。
@@ -272,6 +275,7 @@ interface OutlineComponentRoleScore {
 function getOutlineComponentRoleInfo(
   pixelMap: PixelMap,
   component: Component,
+  boundaryPoints: Point[],
   boundaryCount: number,
   options: Required<OutlinePixelMapOptions>,
   colourStats: OutlineColourStats,
@@ -291,7 +295,7 @@ function getOutlineComponentRoleInfo(
   const chroma = outlineChroma(sampleHex);
   const colourCount = colourStats.counts.get(sampleHex) ?? area;
   const globalColourRatio = colourStats.totalPixels > 0 ? colourCount / colourStats.totalPixels : 0;
-  const adjacent = getOutlineAdjacentInfo(pixelMap, component, sampleHex);
+  const adjacent = getOutlineAdjacentInfo(pixelMap, component, sampleHex, boundaryPoints);
 
   return {
     area,
@@ -373,22 +377,23 @@ function getOutlineAdjacentInfo(
   pixelMap: PixelMap,
   component: Component,
   componentHex: string,
+  boundaryPoints: Point[],
 ): OutlineAdjacentInfo {
-  const componentPoints = new Set(component.points.map((point) => `${point.x},${point.y}`));
   const adjacentCounts = new Map<string, number>();
   let totalAdjacent = 0;
   let nearestDistance = Number.POSITIVE_INFINITY;
   let nearestLumaGap = Number.POSITIVE_INFINITY;
   let touchesDarkLineLike = false;
 
-  for (const point of component.points) {
+  // 只需要边界点来统计邻接关系；扫全部 component points 会在 128 色碎块时非常慢。
+  const pointsToScan = sampleOutlineBoundaryPoints(
+    boundaryPoints.length > 0 ? boundaryPoints : component.points,
+  );
+
+  for (const point of pointsToScan) {
     for (const { dx, dy } of NEIGHBORS) {
       const nx = point.x + dx;
       const ny = point.y + dy;
-
-      if (componentPoints.has(`${nx},${ny}`)) {
-        continue;
-      }
 
       const neighbour = pixelMap[ny]?.[nx];
       if (!isDrawable(neighbour)) {
@@ -430,6 +435,26 @@ function getOutlineAdjacentInfo(
   };
 }
 
+function sampleOutlineBoundaryPoints(points: Point[]): Point[] {
+  const maxSamples = 768;
+
+  if (points.length <= maxSamples) {
+    return points;
+  }
+
+  const step = Math.ceil(points.length / maxSamples);
+  const sampled: Point[] = [];
+
+  for (let index = 0; index < points.length; index += step) {
+    const point = points[index];
+    if (point) {
+      sampled.push(point);
+    }
+  }
+
+  return sampled;
+}
+
 function outlineColourDistance(leftHex: string, rightHex: string): number {
   const left = parseOutlineHex(leftHex);
   const right = parseOutlineHex(rightHex);
@@ -450,6 +475,8 @@ function normalizeOutlineHex(hex: string): string {
 }
 
 
+const OUTLINE_RGB_CACHE = new Map<string, { r: number; g: number; b: number }>();
+
 function outlineLuma(hex: string): number {
   const rgb = parseOutlineHex(hex);
   return rgb.r * 0.299 + rgb.g * 0.587 + rgb.b * 0.114;
@@ -466,11 +493,19 @@ function parseOutlineHex(hex: string): { r: number; g: number; b: number } {
     ? normalized.split("").map((char) => char + char).join("")
     : normalized.padEnd(6, "0").slice(0, 6);
 
-  return {
+  const cached = OUTLINE_RGB_CACHE.get(value);
+  if (cached) {
+    return cached;
+  }
+
+  const rgb = {
     r: Number.parseInt(value.slice(0, 2), 16) || 0,
     g: Number.parseInt(value.slice(2, 4), 16) || 0,
     b: Number.parseInt(value.slice(4, 6), 16) || 0,
   };
+
+  OUTLINE_RGB_CACHE.set(value, rgb);
+  return rgb;
 }
 
 export function createOutlinePixelMap(
@@ -531,6 +566,7 @@ export function createOutlinePixelMap(
         shouldKeepNonOutlinedComponent(
           pixelMap,
           component,
+          boundaryPoints,
           boundaryPoints.length,
           resolved,
           outlineColourStats,
