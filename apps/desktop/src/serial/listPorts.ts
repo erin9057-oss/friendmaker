@@ -1,5 +1,9 @@
 import net from "node:net";
 import os from "node:os";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFile = promisify(execFileCallback);
 
 export interface SerialPortInfo {
   path: string;
@@ -8,10 +12,6 @@ export interface SerialPortInfo {
 
 const ESP_PORT = 8080;
 const ESP_PROBE_COMMAND = "SEQ 1234abcd 1 I\n";
-const DEFAULT_CANDIDATES = [
-  "192.168.150.247",
-  "10.201.19.247",
-];
 
 export function preferSerialPath(path: string): string {
   return path.trim();
@@ -28,28 +28,94 @@ function isUsableIpv4(address: string): boolean {
   );
 }
 
-function getCandidateSubnets(): string[] {
+function subnetFromIpv4(address: string): string | null {
+  if (!isUsableIpv4(address)) {
+    return null;
+  }
+
+  const parts = address.split(".");
+  if (parts.length !== 4) {
+    return null;
+  }
+
+  return `${parts[0]}.${parts[1]}.${parts[2]}.`;
+}
+
+function getSubnetsFromNodeNetworkInterfaces(): string[] {
   const subnets = new Set<string>();
 
   for (const infos of Object.values(os.networkInterfaces())) {
     for (const info of infos ?? []) {
-      if (info.family !== "IPv4" || info.internal || !isUsableIpv4(info.address)) {
+      if (info.family !== "IPv4" || info.internal) {
         continue;
       }
 
-      const parts = info.address.split(".");
-      if (parts.length !== 4) {
-        continue;
+      const subnet = subnetFromIpv4(info.address);
+      if (subnet) {
+        subnets.add(subnet);
       }
-
-      subnets.add(`${parts[0]}.${parts[1]}.${parts[2]}.`);
     }
   }
 
   return [...subnets];
 }
 
-function probeEsp(ip: string, timeoutMs = 320): Promise<boolean> {
+async function getSubnetsFromIfconfig(): Promise<string[]> {
+  try {
+    const { stdout } = await execFile("ifconfig", [], { timeout: 3000 });
+    const subnets = new Set<string>();
+    const lines = stdout.split(/\r?\n/u);
+    let currentInterface = "";
+
+    for (const line of lines) {
+      const interfaceMatch = /^([a-zA-Z0-9_.:-]+):\s/u.exec(line);
+      if (interfaceMatch?.[1]) {
+        currentInterface = interfaceMatch[1];
+      }
+
+      const inetMatch = /\binet\s+(?:addr:)?(\d+\.\d+\.\d+\.\d+)/u.exec(line);
+      if (!inetMatch?.[1]) {
+        continue;
+      }
+
+      const address = inetMatch[1];
+      const subnet = subnetFromIpv4(address);
+
+      if (!subnet) {
+        continue;
+      }
+
+      // Android hotspot interfaces are commonly ap0 / swlan0 / softap0.
+      // Prefer the current hotspot subnet, but keep any usable local /24 subnet
+      // as fallback for devices that expose a different interface name.
+      if (/^(ap\d*|swlan\d*|softap\d*|wlan1)$/u.test(currentInterface)) {
+        return [subnet];
+      }
+
+      subnets.add(subnet);
+    }
+
+    return [...subnets];
+  } catch {
+    return [];
+  }
+}
+
+async function getCandidateSubnets(): Promise<string[]> {
+  const subnets = new Set<string>();
+
+  for (const subnet of await getSubnetsFromIfconfig()) {
+    subnets.add(subnet);
+  }
+
+  for (const subnet of getSubnetsFromNodeNetworkInterfaces()) {
+    subnets.add(subnet);
+  }
+
+  return [...subnets];
+}
+
+function probeEsp(ip: string, timeoutMs = 450): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = new net.Socket();
     let done = false;
@@ -83,16 +149,15 @@ function probeEsp(ip: string, timeoutMs = 320): Promise<boolean> {
 }
 
 async function discoverEspIps(): Promise<string[]> {
-  const candidates = new Set<string>(DEFAULT_CANDIDATES);
-  const subnets = getCandidateSubnets();
+  const subnets = await getCandidateSubnets();
+  const ips: string[] = [];
 
   for (const subnet of subnets) {
     for (let host = 2; host <= 254; host += 1) {
-      candidates.add(`${subnet}${host}`);
+      ips.push(`${subnet}${host}`);
     }
   }
 
-  const ips = [...candidates];
   const found: string[] = [];
   const concurrency = 96;
   let cursor = 0;
@@ -121,27 +186,11 @@ async function discoverEspIps(): Promise<string[]> {
 
 export async function listPortInfos(): Promise<SerialPortInfo[]> {
   const discoveredIps = await discoverEspIps();
-  const ports: SerialPortInfo[] = [];
 
-  for (const ip of discoveredIps) {
-    ports.push({
-      path: ip,
-      label: `${ip} | ESP32-S3 Wi-Fi 节点（自动发现）`,
-    });
-  }
-
-  for (const ip of DEFAULT_CANDIDATES) {
-    if (discoveredIps.includes(ip)) {
-      continue;
-    }
-
-    ports.push({
-      path: ip,
-      label: `${ip} | ESP32-S3 Wi-Fi 节点（候选）`,
-    });
-  }
-
-  return ports;
+  return discoveredIps.map((ip) => ({
+    path: ip,
+    label: `${ip} | ESP32-S3 Wi-Fi 节点（自动发现）`,
+  }));
 }
 
 export async function listPorts(): Promise<string[]> {

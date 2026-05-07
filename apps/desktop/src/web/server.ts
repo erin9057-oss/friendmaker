@@ -436,6 +436,46 @@ function snapshotManagedExecution(execution: ManagedExecution = managedExecution
   };
 }
 
+function controlManagedExecution(action: string): Record<string, unknown> {
+  if (action === "stop") {
+    if (isManagedExecutionActive(managedExecution.status)) {
+      managedExecution.status = "stopping";
+      managedExecution.sender?.stop();
+      appendManagedExecutionLine(managedExecution, "INFO stop requested");
+    }
+
+    return snapshotManagedExecution();
+  }
+
+  if (action === "pause") {
+    if (managedExecution.status === "running") {
+      managedExecution.status = "paused";
+      managedExecution.sender?.pause();
+      appendManagedExecutionLine(managedExecution, "INFO pause requested");
+    }
+
+    return snapshotManagedExecution();
+  }
+
+  if (action === "resume") {
+    if (managedExecution.status === "paused") {
+      managedExecution.status = "running";
+      managedExecution.sender?.resume();
+      appendManagedExecutionLine(managedExecution, "INFO resume requested");
+    }
+
+    return snapshotManagedExecution();
+  }
+
+  if (action === "reset") {
+    managedExecution.sender?.stop();
+    resetManagedExecutionState();
+    return snapshotManagedExecution();
+  }
+
+  throw new Error(`Unsupported execution control action: ${action}`);
+}
+
 function makeCliOverrides(input: {
   size?: number;
   width?: number;
