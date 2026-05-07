@@ -1002,38 +1002,184 @@ function shouldStartFromCanvasCenter(profile: DrawingProfile): boolean {
 
 function prioritiseLineLikePaletteColours(
   colours: Array<{ colorIndex: number; colorHex: string; pixelCount?: number }>,
+  pixelMap?: PixelMap,
 ): Array<{ colorIndex: number; colorHex: string; pixelCount?: number }> {
+  const roleByIndex = pixelMap ? collectPaletteColourRoleAggregates(pixelMap) : new Map<number, PaletteColourRoleAggregate>();
+
   return [...colours].sort((a, b) => {
     const aInfo = paletteColourPriorityInfo(a.colorHex, a.pixelCount ?? 0);
     const bInfo = paletteColourPriorityInfo(b.colorHex, b.pixelCount ?? 0);
+    const aRole = roleByIndex.get(a.colorIndex);
+    const bRole = roleByIndex.get(b.colorIndex);
 
-    // 第一优先：线稿候选色必须排在普通填充色前。
-    if (aInfo.isLineLike !== bInfo.isLineLike) {
-      return aInfo.isLineLike ? -1 : 1;
+    const aInk = isTrueInkColour(aInfo);
+    const bInk = isTrueInkColour(bInfo);
+
+    // PC0/PC1：先保证真正墨线色排最前，避免大面积深灰填充抢 PC0。
+    if (aInk !== bInk) {
+      return aInk ? -1 : 1;
     }
 
-    if (aInfo.isLineLike && bInfo.isLineLike) {
-      // 第二优先：最深色先注入，确保 PC0 是最深的线稿/黑线候选。
-      if (aInfo.luma !== bInfo.luma) {
+    if (aInk && bInk) {
+      // 真墨线内部：更深优先；深度接近时，像素多的主线优先。
+      if (Math.abs(aInfo.luma - bInfo.luma) > 3) {
         return aInfo.luma - bInfo.luma;
       }
 
-      // 第三优先：同样深度时，像素更多的主勾线优先。
       if (aInfo.pixelCount !== bInfo.pixelCount) {
         return bInfo.pixelCount - aInfo.pixelCount;
-      }
-
-      // 第四优先：综合线稿分数。
-      if (aInfo.lineScore !== bInfo.lineScore) {
-        return bInfo.lineScore - aInfo.lineScore;
       }
 
       return a.colorIndex - b.colorIndex;
     }
 
-    // 非线稿色保持原色号顺序，避免填充/阴影层次乱跳。
+    const aMain = aRole?.mainOutlineScore ?? aInfo.lineScore;
+    const bMain = bRole?.mainOutlineScore ?? bInfo.lineScore;
+    const aSub = aRole?.secondaryOutlineScore ?? 0;
+    const bSub = bRole?.secondaryOutlineScore ?? 0;
+    const aDetail = aRole?.detailScore ?? 0;
+    const bDetail = bRole?.detailScore ?? 0;
+
+    // 非真墨线：再按结构线/次线/装饰排序。
+    if (Math.abs(aMain - bMain) > 10) {
+      return bMain - aMain;
+    }
+
+    if (Math.abs(aSub - bSub) > 10) {
+      return bSub - aSub;
+    }
+
+    if (Math.abs(aDetail - bDetail) > 12) {
+      return bDetail - aDetail;
+    }
+
+    if (aInfo.isLineLike !== bInfo.isLineLike) {
+      return aInfo.isLineLike ? -1 : 1;
+    }
+
     return a.colorIndex - b.colorIndex;
   });
+}
+
+function isTrueInkColour(info: {
+  luma: number;
+  lineScore: number;
+  pixelCount: number;
+}): boolean {
+  // 接近黑色的线稿色。这里故意不让 #4a/#5a 这种大面积填充进 PC0/PC1。
+  return info.luma <= 38 || (info.luma <= 48 && info.lineScore >= 105);
+}
+
+const PALETTE_ROLE_NEIGHBORS: ReadonlyArray<{ dx: number; dy: number }> = [
+  { dx: 1, dy: 0 },
+  { dx: -1, dy: 0 },
+  { dx: 0, dy: 1 },
+  { dx: 0, dy: -1 },
+];
+
+interface PaletteColourRoleAggregate {
+  colorIndex: number;
+  pixelCount: number;
+  boundaryTouches: number;
+  luma: number;
+  chroma: number;
+  mainOutlineScore: number;
+  secondaryOutlineScore: number;
+  detailScore: number;
+}
+
+function collectPaletteColourRoleAggregates(pixelMap: PixelMap): Map<number, PaletteColourRoleAggregate> {
+  const byIndex = new Map<number, PaletteColourRoleAggregate & { lumaSum: number; chromaSum: number }>();
+  const height = pixelMap.length;
+  const width = pixelMap[0]?.length ?? 0;
+
+  for (let y = 0; y < height; y += 1) {
+    const row = pixelMap[y];
+    if (!row) {
+      continue;
+    }
+
+    for (let x = 0; x < width; x += 1) {
+      const pixel = row[x];
+      if (!pixel || pixel.alpha <= 0 || pixel.colorIndex < 0) {
+        continue;
+      }
+
+      const rgb = parsePaletteHexLite(pixel.colorHex);
+      const luma = rgb.r * 0.299 + rgb.g * 0.587 + rgb.b * 0.114;
+      const chroma = Math.max(rgb.r, rgb.g, rgb.b) - Math.min(rgb.r, rgb.g, rgb.b);
+
+      let entry = byIndex.get(pixel.colorIndex);
+      if (!entry) {
+        entry = {
+          colorIndex: pixel.colorIndex,
+          pixelCount: 0,
+          boundaryTouches: 0,
+          luma: 0,
+          chroma: 0,
+          mainOutlineScore: 0,
+          secondaryOutlineScore: 0,
+          detailScore: 0,
+          lumaSum: 0,
+          chromaSum: 0,
+        };
+        byIndex.set(pixel.colorIndex, entry);
+      }
+
+      entry.pixelCount += 1;
+      entry.lumaSum += luma;
+      entry.chromaSum += chroma;
+
+      let boundaryTouch = false;
+      for (const { dx, dy } of PALETTE_ROLE_NEIGHBORS) {
+        const nx = x + dx;
+        const ny = y + dy;
+        const neighbour = pixelMap[ny]?.[nx];
+
+        if (!neighbour || neighbour.alpha <= 0 || neighbour.colorIndex !== pixel.colorIndex) {
+          boundaryTouch = true;
+          break;
+        }
+      }
+
+      if (boundaryTouch) {
+        entry.boundaryTouches += 1;
+      }
+    }
+  }
+
+  for (const entry of byIndex.values()) {
+    entry.luma = entry.pixelCount > 0 ? entry.lumaSum / entry.pixelCount : 255;
+    entry.chroma = entry.pixelCount > 0 ? entry.chromaSum / entry.pixelCount : 0;
+
+    const boundaryRatio = entry.pixelCount > 0 ? entry.boundaryTouches / entry.pixelCount : 0;
+    const darkBonus = Math.max(0, 110 - entry.luma);
+    const mediumDarkBonus = entry.luma >= 42 && entry.luma <= 115 ? 1 : 0;
+    const lowChromaBonus = entry.chroma <= 38 ? 1 : 0;
+    const countBonus = Math.sqrt(entry.pixelCount);
+
+    entry.mainOutlineScore =
+      darkBonus * 1.35 +
+      boundaryRatio * 150 +
+      countBonus * 10 +
+      (lowChromaBonus ? 35 : 0) -
+      Math.max(0, entry.chroma - 75) * 0.5;
+
+    entry.secondaryOutlineScore =
+      (mediumDarkBonus ? 55 : 0) +
+      boundaryRatio * 120 +
+      countBonus * 7 +
+      Math.max(0, 125 - entry.luma) * 0.55 +
+      (entry.chroma <= 55 ? 18 : 0);
+
+    entry.detailScore =
+      (entry.chroma >= 12 ? 50 : 0) +
+      boundaryRatio * 80 +
+      countBonus * 4 -
+      Math.max(0, entry.pixelCount - 900) * 0.015;
+  }
+
+  return byIndex;
 }
 
 function paletteColourPriorityInfo(hex: string, pixelCount: number): {
@@ -1274,7 +1420,7 @@ export function generateScanlineCommands(
       current = appendOrderedPixels(commands, orderedPixels, current, profile, grid);
     }
   } else if (profile.colorMode === "palette") {
-    const usedColors = prioritiseLineLikePaletteColours(getUsedPaletteColors(pixelMap));
+    const usedColors = prioritiseLineLikePaletteColours(getUsedPaletteColors(pixelMap), pixelMap);
 
     for (let batchStart = 0; batchStart < usedColors.length; batchStart += PALETTE_SLOT_COUNT) {
       const batch = usedColors.slice(batchStart, batchStart + PALETTE_SLOT_COUNT);
