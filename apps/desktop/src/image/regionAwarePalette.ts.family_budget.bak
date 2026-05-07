@@ -80,8 +80,10 @@ export function optimiseRegionAwarePalette(
 
     // 64/128 色不要再做最后一轮强制拉色差，否则会产生过锐噪点。
     // 这里只合并游戏里视觉等效的颜色，再轻微平滑 1~3 像素的小色岛。
+    working = separateSemanticNeighbourColours(working, normalized);
     working = collapseVisuallyEquivalentColours(working, normalized);
-    working = collapseGameEquivalentColoursLite(working, normalized);
+    working = separateSemanticNeighbourColours(working, normalized);
+    working = denoiseFragmentedPalette(working, normalized);
     working = smoothTinyColourIslands(
       working,
       normalized.targetColorCount >= 128 ? 3 : 2,
@@ -109,7 +111,10 @@ export function optimiseRegionAwarePalette(
   }
 
   working = expandPaletteSeparation(working, normalized);
+  working = separateSemanticNeighbourColours(working, normalized);
   working = collapseVisuallyEquivalentColours(working, normalized);
+  working = separateSemanticNeighbourColours(working, normalized);
+  working = denoiseFragmentedPalette(working, normalized);
 
   if (normalized.targetColorCount >= 64) {
     working = smoothTinyColourIslands(
@@ -122,236 +127,6 @@ export function optimiseRegionAwarePalette(
 
   return reindexPixelMapByColorHex(working);
 }
-
-
-function collapseGameEquivalentColoursLite(
-  pixelMap: PixelMap,
-  options: NormalizedOptions,
-): PixelMap {
-  if (options.targetColorCount < 64) {
-    return pixelMap;
-  }
-
-  let working = pixelMap;
-  let distinct = getDistinctColorHexes(working);
-
-  if (distinct.length <= 1) {
-    return reindexPixelMapByColorHex(working);
-  }
-
-  // v4-lite 不按用户选的 128 直接保留 128 色，而是按实际复杂度给一个软上限。
-  // 但它只合并“游戏里大概率等效”的近似色，不强行砍到固定数量。
-  const softCap = Math.min(
-    options.targetColorCount,
-    Math.max(
-      options.targetColorCount <= 64 ? 42 : 52,
-      Math.round(Math.sqrt(distinct.length) * 4.2 + 18),
-    ),
-  );
-
-  let guard = 0;
-
-  while (guard < 220) {
-    distinct = getDistinctColorHexes(working);
-    if (distinct.length <= softCap) {
-      break;
-    }
-
-    const stats = buildLiteColourStats(working);
-    let bestPair: [string, string] | null = null;
-    let bestScore = Number.POSITIVE_INFINITY;
-
-    for (let i = 0; i < distinct.length; i += 1) {
-      const leftHex = distinct[i];
-      if (!leftHex) continue;
-
-      for (let j = i + 1; j < distinct.length; j += 1) {
-        const rightHex = distinct[j];
-        if (!rightHex) continue;
-
-        const left = stats.get(leftHex);
-        const right = stats.get(rightHex);
-        if (!left || !right) continue;
-
-        if (!canMergeGameEquivalentLite(left, right, options)) {
-          continue;
-        }
-
-        const score = gameEquivalentLiteDistance(left, right);
-
-        if (score < bestScore) {
-          bestScore = score;
-          bestPair = [leftHex, rightHex];
-        }
-      }
-    }
-
-    if (!bestPair) {
-      break;
-    }
-
-    const left = stats.get(bestPair[0]);
-    const right = stats.get(bestPair[1]);
-
-    if (!left || !right) {
-      break;
-    }
-
-    const [fromHex, toHex] = chooseLiteMergeDirection(left, right);
-    working = replaceColourLite(working, fromHex, toHex);
-    guard += 1;
-  }
-
-  return reindexPixelMapByColorHex(working);
-}
-
-interface LiteColourStats {
-  hex: string;
-  count: number;
-  rgb: Rgb;
-  hsv: Hsv;
-  luma255: number;
-  chroma: number;
-}
-
-function buildLiteColourStats(pixelMap: PixelMap): Map<string, LiteColourStats> {
-  const stats = new Map<string, LiteColourStats>();
-
-  for (const row of pixelMap) {
-    for (const pixel of row) {
-      if (!isDrawablePixel(pixel)) {
-        continue;
-      }
-
-      const hex = normalizeHex(pixel.colorHex);
-      let current = stats.get(hex);
-
-      if (!current) {
-        const rgb = parseHexColor(hex);
-        current = {
-          hex,
-          count: 0,
-          rgb,
-          hsv: rgbToHsv(rgb),
-          luma255: getLuma255(rgb),
-          chroma: Math.max(rgb.r, rgb.g, rgb.b) - Math.min(rgb.r, rgb.g, rgb.b),
-        };
-        stats.set(hex, current);
-      }
-
-      current.count += 1;
-    }
-  }
-
-  return stats;
-}
-
-function canMergeGameEquivalentLite(
-  left: LiteColourStats,
-  right: LiteColourStats,
-  options: NormalizedOptions,
-): boolean {
-  const lumaGap = Math.abs(left.luma255 - right.luma255);
-  const chromaGap = Math.abs(left.chroma - right.chroma);
-  const hueGap = hueDistance(left.hsv.h, right.hsv.h);
-  const bothLowChroma = left.chroma < 18 && right.chroma < 18;
-  const bothDark = left.luma255 <= 70 && right.luma255 <= 70;
-  const oneVeryDark = left.luma255 <= 38 || right.luma255 <= 38;
-
-  // 避免把黑色线稿和明显更亮的填充/高光合并。
-  if (oneVeryDark && lumaGap > 10) {
-    return false;
-  }
-
-  // 有色装饰不要跨色相乱合并，比如金色、粉色、灰蓝色。
-  if (!bothLowChroma && hueGap > 18) {
-    return false;
-  }
-
-  // 64 色比 128 色更谨慎一点，避免出现硬色块。
-  const maxLumaGap =
-    options.targetColorCount >= 128
-      ? bothDark ? 12 : 10
-      : bothDark ? 10 : 8;
-
-  const maxChromaGap =
-    options.targetColorCount >= 128 ? 18 : 14;
-
-  if (lumaGap > maxLumaGap) {
-    return false;
-  }
-
-  if (chromaGap > maxChromaGap) {
-    return false;
-  }
-
-  return gameEquivalentLiteDistance(left, right) <=
-    (options.targetColorCount >= 128 ? 18 : 15);
-}
-
-function gameEquivalentLiteDistance(left: LiteColourStats, right: LiteColourStats): number {
-  const rgbGap =
-    Math.abs(left.rgb.r - right.rgb.r) +
-    Math.abs(left.rgb.g - right.rgb.g) +
-    Math.abs(left.rgb.b - right.rgb.b);
-
-  const lumaGap = Math.abs(left.luma255 - right.luma255);
-  const chromaGap = Math.abs(left.chroma - right.chroma);
-  const hueGap = hueDistance(left.hsv.h, right.hsv.h);
-  const huePenalty = left.chroma < 18 && right.chroma < 18 ? 0 : hueGap * 0.12;
-
-  return rgbGap * 0.18 + lumaGap * 1.15 + chromaGap * 0.35 + huePenalty;
-}
-
-function chooseLiteMergeDirection(
-  left: LiteColourStats,
-  right: LiteColourStats,
-): [string, string] {
-  // 深色线条类：尽量保留更暗的那个，避免线稿变浅。
-  if (left.luma255 <= 45 || right.luma255 <= 45) {
-    return left.luma255 <= right.luma255
-      ? [right.hex, left.hex]
-      : [left.hex, right.hex];
-  }
-
-  // 其他颜色：小面积合并到大面积，减少换色和碎色。
-  return left.count <= right.count
-    ? [left.hex, right.hex]
-    : [right.hex, left.hex];
-}
-
-function replaceColourLite(pixelMap: PixelMap, fromHex: string, toHex: string): PixelMap {
-  const source = normalizeHex(fromHex);
-  const target = normalizeHex(toHex);
-
-  if (source === target) {
-    return pixelMap;
-  }
-
-  return pixelMap.map((row) =>
-    row.map((pixel) => {
-      if (!isDrawablePixel(pixel)) {
-        return pixel;
-      }
-
-      const hex = normalizeHex(pixel.colorHex);
-      if (hex !== source) {
-        return pixel;
-      }
-
-      return {
-        ...pixel,
-        colorHex: target,
-      };
-    }),
-  );
-}
-
-function hueDistance(left: number, right: number): number {
-  const diff = Math.abs(left - right);
-  return Math.min(diff, 360 - diff);
-}
-
 
 function normalizeOptions(options: RegionAwarePaletteOptions): NormalizedOptions {
   const targetColorCount = Math.max(2, options.targetColorCount ?? 16);
@@ -1202,6 +977,357 @@ function darkenRgb(rgb: Rgb, amount: number): Rgb {
 }
 
 
+
+function separateSemanticNeighbourColours(pixelMap: PixelMap, options: NormalizedOptions): PixelMap {
+  const { components, componentByCoord } = collectComponents(pixelMap);
+  const colorStats = buildColorStats(pixelMap, componentByCoord);
+  const protectedScores = buildProtectedColorScores(components, colorStats, options);
+
+  const mapping = new Map<string, string>();
+  const adjusted = new Map<string, Rgb>();
+
+  for (const [hex, stat] of colorStats.entries()) {
+    mapping.set(hex, hex);
+    adjusted.set(hex, parseHexColor(hex));
+  }
+
+  const semanticPairs: Array<[ColorStats, ColorStats]> = [];
+
+  for (const left of colorStats.values()) {
+    for (const [rightHex, boundary] of left.neighborColors.entries()) {
+      if (boundary <= 0) continue;
+
+      const right = colorStats.get(rightHex);
+      if (!right) continue;
+      if (left.colorHex >= right.colorHex) continue;
+
+      if (!isSemanticSeparationPair(left, right, protectedScores, options)) {
+        continue;
+      }
+
+      semanticPairs.push([left, right]);
+    }
+  }
+
+  const minGameGap = getSemanticMinLumaGap(options);
+
+  for (const [left, right] of semanticPairs) {
+    const leftRgb = adjusted.get(left.colorHex) ?? left.rgb;
+    const rightRgb = adjusted.get(right.colorHex) ?? right.rgb;
+
+    const leftLuma = getLuma255(leftRgb);
+    const rightLuma = getLuma255(rightRgb);
+    const gap = Math.abs(leftLuma - rightLuma);
+
+    if (gap >= minGameGap) {
+      continue;
+    }
+
+    const leftScore = colourLayerPriority(left, protectedScores);
+    const rightScore = colourLayerPriority(right, protectedScores);
+
+    // 更像勾线/暗线的往暗处推；更像填充/高光的往亮处推。
+    if (leftLuma <= rightLuma) {
+      const darkHex = left.colorHex;
+      const lightHex = right.colorHex;
+      const darkRgb = adjusted.get(darkHex) ?? leftRgb;
+      const lightRgb = adjusted.get(lightHex) ?? rightRgb;
+
+      const need = minGameGap - gap;
+      const darkPush = Math.ceil(need * (leftScore >= rightScore ? 0.65 : 0.45));
+      const lightPush = Math.ceil(need - darkPush);
+
+      adjusted.set(darkHex, darkenRgb(darkRgb, darkPush));
+      adjusted.set(lightHex, brightenRgb(lightRgb, lightPush));
+    } else {
+      const darkHex = right.colorHex;
+      const lightHex = left.colorHex;
+      const darkRgb = adjusted.get(darkHex) ?? rightRgb;
+      const lightRgb = adjusted.get(lightHex) ?? leftRgb;
+
+      const need = minGameGap - gap;
+      const darkPush = Math.ceil(need * (rightScore >= leftScore ? 0.65 : 0.45));
+      const lightPush = Math.ceil(need - darkPush);
+
+      adjusted.set(darkHex, darkenRgb(darkRgb, darkPush));
+      adjusted.set(lightHex, brightenRgb(lightRgb, lightPush));
+    }
+  }
+
+  for (const [hex, rgb] of adjusted.entries()) {
+    mapping.set(hex, rgbToHex(rgb));
+  }
+
+  return applyColorMapping(pixelMap, mapping);
+}
+
+function isSemanticSeparationPair(
+  left: ColorStats,
+  right: ColorStats,
+  protectedScores: Map<string, number>,
+  options: NormalizedOptions,
+): boolean {
+  const leftLine = isLikelyLineColor(left);
+  const rightLine = isLikelyLineColor(right);
+
+  // 勾线 vs 非勾线：一定要拉开。
+  if (leftLine !== rightLine) {
+    return true;
+  }
+
+  const leftProtected = (protectedScores.get(left.colorHex) ?? 0) > 0;
+  const rightProtected = (protectedScores.get(right.colorHex) ?? 0) > 0;
+
+  // 同一个局部结构里，保护色之间如果过近，也要拉开。
+  if (leftProtected || rightProtected) {
+    return true;
+  }
+
+  const lumaGap = Math.abs(left.luminance - right.luminance);
+  const rgbGap = colorDistance(left.rgb, right.rgb);
+  const sameHueFamily =
+    left.hsv.s <= 0.12 ||
+    right.hsv.s <= 0.12 ||
+    circularHueDistance(left.hsv.h, right.hsv.h) <= 28;
+
+  // 同区域相邻的 base/shadow/highlight：颜色接近但有绘画层级意义，要主动拉开，不要合并。
+  if (sameHueFamily && rgbGap <= getSemanticNearDistance(options) && lumaGap <= 0.14) {
+    return true;
+  }
+
+  return false;
+}
+
+function getSemanticMinLumaGap(options: NormalizedOptions): number {
+  if (options.targetColorCount <= 16) return 22;
+  if (options.targetColorCount <= 32) return 18;
+  if (options.targetColorCount <= 64) return 15;
+  return 12;
+}
+
+function getSemanticNearDistance(options: NormalizedOptions): number {
+  if (options.targetColorCount <= 16) return 36;
+  if (options.targetColorCount <= 32) return 34;
+  if (options.targetColorCount <= 64) return 30;
+  return 26;
+}
+
+function colourLayerPriority(entry: ColorStats, protectedScores: Map<string, number>): number {
+  return (
+    (protectedScores.get(entry.colorHex) ?? 0) +
+    (isLikelyLineColor(entry) ? 500 : 0) +
+    boundaryRatio(entry) * 160 +
+    Math.min(300, entry.count * 0.2)
+  );
+}
+
+
+
+function denoiseFragmentedPalette(pixelMap: PixelMap, options: NormalizedOptions): PixelMap {
+  const maxIslandPixels = getFragmentIslandMaxPixels(options);
+  const maxTotalPixels = getFragmentTotalMaxPixels(pixelMap, options);
+  const mergeDistance = getFragmentMergeDistance(options);
+
+  if (maxIslandPixels <= 0 && maxTotalPixels <= 0) {
+    return pixelMap;
+  }
+
+  const colorTotals = countColourTotals(pixelMap);
+  const height = pixelMap.length;
+  const width = pixelMap[0]?.length ?? 0;
+  const visited = Array.from({ length: height }, () => Array<boolean>(width).fill(false));
+  let working = pixelMap;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (visited[y]?.[x]) {
+        continue;
+      }
+
+      const sourcePixel = working[y]?.[x];
+
+      if (!isDrawablePixel(sourcePixel)) {
+        visited[y]![x] = true;
+        continue;
+      }
+
+      const sourceHex = normalizeHex(sourcePixel.colorHex);
+      const component = collectSameColorComponent(working, x, y, visited);
+      const totalPixelsForColour = colorTotals.get(sourceHex) ?? 0;
+
+      const isTinyIsland = component.length <= maxIslandPixels;
+      const isLowUsageColour = totalPixelsForColour <= maxTotalPixels;
+
+      if (!isTinyIsland && !isLowUsageColour) {
+        continue;
+      }
+
+      const targetHex = chooseFragmentMergeTarget(
+        working,
+        component,
+        sourceHex,
+        mergeDistance,
+      );
+
+      if (!targetHex) {
+        continue;
+      }
+
+      // 不允许把同一区域的绘画层级吃掉。
+      // 例如勾线 / 填充 / 阴影 / 高光之间如果有明显层级差，就保留。
+      if (shouldPreserveShadeSeparation(sourceHex, targetHex, true)) {
+        continue;
+      }
+
+      working = replacePointsWithColor(working, component, targetHex);
+    }
+  }
+
+  return reindexPixelMapByColorHex(working);
+}
+
+function countColourTotals(pixelMap: PixelMap): Map<string, number> {
+  const totals = new Map<string, number>();
+
+  for (const row of pixelMap) {
+    for (const pixel of row) {
+      if (!isDrawablePixel(pixel)) {
+        continue;
+      }
+
+      const hex = normalizeHex(pixel.colorHex);
+      totals.set(hex, (totals.get(hex) ?? 0) + 1);
+    }
+  }
+
+  return totals;
+}
+
+function chooseFragmentMergeTarget(
+  pixelMap: PixelMap,
+  component: Array<{ x: number; y: number }>,
+  sourceHex: string,
+  mergeDistance: number,
+): string | null {
+  const height = pixelMap.length;
+  const width = pixelMap[0]?.length ?? 0;
+
+  const eightNeighbors = [
+    { dx: -1, dy: -1 },
+    { dx: 0, dy: -1 },
+    { dx: 1, dy: -1 },
+    { dx: -1, dy: 0 },
+    { dx: 1, dy: 0 },
+    { dx: -1, dy: 1 },
+    { dx: 0, dy: 1 },
+    { dx: 1, dy: 1 },
+  ];
+
+  const votes = new Map<string, number>();
+
+  for (const point of component) {
+    for (const neighbor of eightNeighbors) {
+      const nx = point.x + neighbor.dx;
+      const ny = point.y + neighbor.dy;
+
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
+        continue;
+      }
+
+      const candidate = pixelMap[ny]?.[nx];
+
+      if (!isDrawablePixel(candidate)) {
+        continue;
+      }
+
+      const candidateHex = normalizeHex(candidate.colorHex);
+      if (candidateHex === sourceHex) {
+        continue;
+      }
+
+      votes.set(candidateHex, (votes.get(candidateHex) ?? 0) + 1);
+    }
+  }
+
+  if (votes.size === 0) {
+    return null;
+  }
+
+  const minimumVotes = Math.max(2, Math.ceil(component.length * 0.45));
+
+  const candidates = [...votes.entries()]
+    .map(([hex, voteCount]) => ({
+      hex,
+      voteCount,
+      distance: colorDistanceHex(sourceHex, hex),
+      gameEquivalent: isGameEquivalentLowContrast(sourceHex, hex),
+    }))
+    .filter((candidate) => candidate.voteCount >= minimumVotes)
+    .filter((candidate) => candidate.distance <= mergeDistance || candidate.gameEquivalent)
+    .sort((a, b) => {
+      const aScore = a.distance - a.voteCount * 3.5 + (a.gameEquivalent ? -8 : 0);
+      const bScore = b.distance - b.voteCount * 3.5 + (b.gameEquivalent ? -8 : 0);
+      return aScore - bScore;
+    });
+
+  return candidates[0]?.hex ?? null;
+}
+
+function isGameEquivalentLowContrast(leftHex: string, rightHex: string): boolean {
+  const left = parseHexColor(leftHex);
+  const right = parseHexColor(rightHex);
+
+  const leftLuma = getLuminance(left);
+  const rightLuma = getLuminance(right);
+  const lumaGap = Math.abs(leftLuma - rightLuma);
+  const satGap = Math.abs(getSaturation(left) - getSaturation(right));
+  const rgbGap = colorDistance(left, right);
+
+  const bothDark = leftLuma < 0.32 && rightLuma < 0.32;
+  const bothLowSat = getSaturation(left) < 0.22 && getSaturation(right) < 0.22;
+
+  if (bothDark && lumaGap <= 0.035 && satGap <= 0.10) {
+    return true;
+  }
+
+  if (bothLowSat && lumaGap <= 0.045 && rgbGap <= 24) {
+    return true;
+  }
+
+  return false;
+}
+
+function getFragmentIslandMaxPixels(options: NormalizedOptions): number {
+  if (options.targetColorCount <= 16) return 4;
+  if (options.targetColorCount <= 32) return 3;
+  if (options.targetColorCount <= 64) return 4;
+  return 5;
+}
+
+function getFragmentTotalMaxPixels(pixelMap: PixelMap, options: NormalizedOptions): number {
+  const drawablePixels = pixelMap.reduce(
+    (sum, row) => sum + row.filter((pixel) => isDrawablePixel(pixel)).length,
+    0,
+  );
+
+  if (drawablePixels <= 0) {
+    return 0;
+  }
+
+  if (options.targetColorCount <= 16) return Math.max(3, Math.floor(drawablePixels * 0.0010));
+  if (options.targetColorCount <= 32) return Math.max(4, Math.floor(drawablePixels * 0.0014));
+  if (options.targetColorCount <= 64) return Math.max(6, Math.floor(drawablePixels * 0.0018));
+  return Math.max(8, Math.floor(drawablePixels * 0.0022));
+}
+
+function getFragmentMergeDistance(options: NormalizedOptions): number {
+  if (options.targetColorCount <= 16) return 24;
+  if (options.targetColorCount <= 32) return 24;
+  if (options.targetColorCount <= 64) return 22;
+  return 20;
+}
+
+
 function collapseVisuallyEquivalentColours(pixelMap: PixelMap, options: NormalizedOptions): PixelMap {
   const distinct = getDistinctColorHexes(pixelMap);
 
@@ -1315,7 +1441,7 @@ function getTargetEffectiveColourCount(options: NormalizedOptions): number {
   if (options.targetColorCount <= 16) return Math.min(options.targetColorCount, 14);
   if (options.targetColorCount <= 32) return 24;
   if (options.targetColorCount <= 64) return 40;
-  return Math.max(48, Math.round(options.targetColorCount * 0.68));
+  return Math.max(42, Math.round(options.targetColorCount * 0.55));
 }
 
 function getVisualEquivalentMergeThreshold(options: NormalizedOptions): number {
@@ -1385,6 +1511,7 @@ function shouldMergeAsVisuallyEquivalent(
     ((left.neighborColors.get(right.colorHex) ?? 0) + (right.neighborColors.get(left.colorHex) ?? 0) > 0);
 
   // 同一区域/相邻区域内，明显的 base/shadow/highlight 层级要保留。
+  // 跨区域的视觉等效色允许合并，用来减少无意义调色和绘制耗时。
   if (
     linkedByRegion &&
     shouldPreserveShadeSeparation(left.colorHex, right.colorHex, options.preserveLocalShading)
