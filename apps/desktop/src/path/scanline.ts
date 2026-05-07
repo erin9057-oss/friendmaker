@@ -999,6 +999,65 @@ function shouldStartFromCanvasCenter(profile: DrawingProfile): boolean {
   return profile.startCursor === "center";
 }
 
+
+function prioritiseLineLikePaletteColours(
+  colours: Array<{ colorIndex: number; colorHex: string }>,
+): Array<{ colorIndex: number; colorHex: string }> {
+  return [...colours].sort((a, b) => {
+    const aScore = lineLikePalettePriority(a.colorHex);
+    const bScore = lineLikePalettePriority(b.colorHex);
+
+    if (aScore !== bScore) {
+      return bScore - aScore;
+    }
+
+    return a.colorIndex - b.colorIndex;
+  });
+}
+
+function lineLikePalettePriority(hex: string): number {
+  const rgb = parsePaletteHexLite(hex);
+  const luma = rgb.r * 0.299 + rgb.g * 0.587 + rgb.b * 0.114;
+  const chroma = Math.max(rgb.r, rgb.g, rgb.b) - Math.min(rgb.r, rgb.g, rgb.b);
+
+  let score = 0;
+
+  // 最重要：黑色 / 深灰线稿。
+  if (luma <= 42) {
+    score += 100;
+  } else if (luma <= 62) {
+    score += 72;
+  } else if (luma <= 85 && chroma <= 28) {
+    score += 45;
+  }
+
+  // 低饱和深色通常是轮廓、五官、阴影线。
+  if (chroma <= 22 && luma <= 95) {
+    score += 24;
+  }
+
+  // 有色深线，例如深棕、深蓝、深红，也应靠前。
+  if (chroma > 22 && luma <= 72) {
+    score += 18;
+  }
+
+  return score;
+}
+
+function parsePaletteHexLite(hex: string): { r: number; g: number; b: number } {
+  const normalized = hex.trim().replace(/^#/, "");
+  const value = normalized.length === 3
+    ? normalized.split("").map((char) => char + char).join("")
+    : normalized.padEnd(6, "0").slice(0, 6);
+
+  return {
+    r: Number.parseInt(value.slice(0, 2), 16) || 0,
+    g: Number.parseInt(value.slice(2, 4), 16) || 0,
+    b: Number.parseInt(value.slice(4, 6), 16) || 0,
+  };
+}
+
+
 function getUsedPaletteColors(pixelMap: PixelMap): Array<{ colorIndex: number; colorHex: string }> {
   const colorByIndex = new Map<number, string>();
 
@@ -1147,7 +1206,7 @@ export function generateScanlineCommands(
       current = appendOrderedPixels(commands, orderedPixels, current, profile, grid);
     }
   } else if (profile.colorMode === "palette") {
-    const usedColors = getUsedPaletteColors(pixelMap);
+    const usedColors = prioritiseLineLikePaletteColours(getUsedPaletteColors(pixelMap));
 
     for (let batchStart = 0; batchStart < usedColors.length; batchStart += PALETTE_SLOT_COUNT) {
       const batch = usedColors.slice(batchStart, batchStart + PALETTE_SLOT_COUNT);
