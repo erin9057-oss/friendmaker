@@ -19,7 +19,6 @@ import {
   type DrawCommand,
 } from "../protocol/commands.js";
 import { DEFAULT_SAFE_INPUT_TIMING } from "../protocol/timing.js";
-import { compensateGamePaletteHex } from "../image/gamePaletteCompensation.js";
 
 export type PathStrategy = "scanline" | "nearest" | "runs";
 
@@ -1155,7 +1154,7 @@ export function generateScanlineCommands(
       let selectedSlot: number | null = null;
 
       batch.forEach((color, slotIndex) => {
-        commands.push(paletteConfigCommand(slotIndex, compensateGamePaletteHex(color.colorHex)));
+        commands.push(paletteConfigCommand(slotIndex, color.colorHex));
       });
 
       for (const [slotIndex, color] of batch.entries()) {

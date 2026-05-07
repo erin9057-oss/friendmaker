@@ -2,12 +2,12 @@ import type { ImageSource } from "../image/loadImage.js";
 import { createBrushGrid, gridCellBounds, isGridCellInBounds } from "../brushGrid.js";
 import { pixelizeImage } from "../image/pixelize.js";
 import { createOutlinePixelMap } from "../image/outlinePixelMap.js";
+import { optimiseRegionAwarePalette } from "../image/regionAwarePalette.js";
 import { renderPreviewToBuffer } from "../image/renderPreview.js";
 import { estimateRuntimeMs, generateScanlineCommands, type PathStrategy } from "../path/scanline.js";
 import { serializeCommands } from "../protocol/serializer.js";
 import { moveCommand, type DrawCommand } from "../protocol/commands.js";
 import type { CanvasBounds, DrawingMask, DrawingProfile, PixelMap } from "../types.js";
-import { compensateGamePaletteHexes } from "../image/gamePaletteCompensation.js";
 
 export type DrawStrategy = "fill" | "outline";
 
@@ -70,10 +70,15 @@ export async function generateDrawPlan(
           maxBoundaryRatio: 0.34,
         };
 
-  const pixelMap =
+  let pixelMap =
     options?.drawStrategy === "outline"
       ? createOutlinePixelMap(pixelization.pixelMap, outlineOptions)
       : pixelization.pixelMap;
+
+  if (profile.colorMode === "palette") {
+    pixelMap = optimiseRegionAwarePalette(pixelMap);
+  }
+
   const usedColorIndexes = getUsedColorIndexes(pixelMap);
   const previewPng = await renderPreviewToBuffer(pixelMap, profile, previewScale);
   const pathStrategy =
@@ -101,8 +106,7 @@ export async function generateDrawPlan(
     .sort((a, b) => a[0] - b[0])
     .map(([, colorHex]) => colorHex);
 
-  const paletteHexes =
-    profile.colorMode === "palette" ? compensateGamePaletteHexes(rawPaletteHexes) : rawPaletteHexes;
+  const paletteHexes = rawPaletteHexes;
 
   return {
     commands: serializeCommands(drawCommands),
