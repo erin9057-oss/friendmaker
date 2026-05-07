@@ -82,6 +82,7 @@ export function optimiseRegionAwarePalette(
     // 这里只合并游戏里视觉等效的颜色，再轻微平滑 1~3 像素的小色岛。
     working = collapseVisuallyEquivalentColours(working, normalized);
     working = collapseGameEquivalentColoursLite(working, normalized);
+    working = expandSimilarColourFamiliesLite(working, normalized);
     working = smoothTinyColourIslands(
       working,
       normalized.targetColorCount >= 128 ? 3 : 2,
@@ -350,6 +351,147 @@ function replaceColourLite(pixelMap: PixelMap, fromHex: string, toHex: string): 
 function hueDistance(left: number, right: number): number {
   const diff = Math.abs(left - right);
   return Math.min(diff, 360 - diff);
+}
+
+
+
+function expandSimilarColourFamiliesLite(
+  pixelMap: PixelMap,
+  options: NormalizedOptions,
+): PixelMap {
+  if (options.targetColorCount < 64) {
+    return pixelMap;
+  }
+
+  const distinct = getDistinctColorHexes(pixelMap);
+  if (distinct.length <= 1) {
+    return pixelMap;
+  }
+
+  const stats = buildLiteColourStats(pixelMap);
+  const entries = distinct
+    .map((hex) => stats.get(hex))
+    .filter((item): item is LiteColourStats => Boolean(item))
+    .sort((a, b) => a.luma255 - b.luma255);
+
+  const families: LiteColourStats[][] = [];
+
+  for (const entry of entries) {
+    let targetFamily: LiteColourStats[] | null = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+
+    for (const family of families) {
+      const representative = family[Math.floor(family.length / 2)];
+      if (!representative) continue;
+
+      const sameLowChroma = entry.chroma < 20 && representative.chroma < 20;
+      const hueGap = hueDistance(entry.hsv.h, representative.hsv.h);
+      const lumaGap = Math.abs(entry.luma255 - representative.luma255);
+      const chromaGap = Math.abs(entry.chroma - representative.chroma);
+
+      if (!sameLowChroma && hueGap > 22) {
+        continue;
+      }
+
+      if (lumaGap > 34 || chromaGap > 28) {
+        continue;
+      }
+
+      const score = lumaGap * 1.1 + chromaGap * 0.45 + (sameLowChroma ? 0 : hueGap * 0.15);
+      if (score < bestScore) {
+        bestScore = score;
+        targetFamily = family;
+      }
+    }
+
+    if (targetFamily) {
+      targetFamily.push(entry);
+      targetFamily.sort((a, b) => a.luma255 - b.luma255);
+    } else {
+      families.push([entry]);
+    }
+  }
+
+  const mapping = new Map<string, string>();
+
+  for (const family of families) {
+    if (family.length <= 1) {
+      continue;
+    }
+
+    const ordered = [...family].sort((a, b) => a.luma255 - b.luma255);
+    const familyIsDarkLineGroup = ordered[0]?.luma255 !== undefined && ordered[0].luma255 <= 45;
+    const minGap = familyIsDarkLineGroup ? 9 : 7;
+
+    let previousLuma: number | null = null;
+
+    for (const entry of ordered) {
+      let targetLuma = entry.luma255;
+
+      if (previousLuma !== null && targetLuma - previousLuma < minGap) {
+        targetLuma = previousLuma + minGap;
+      }
+
+      // 不要把深色线条整体推亮太多；只做轻微分离。
+      if (familyIsDarkLineGroup) {
+        targetLuma = Math.min(targetLuma, entry.luma255 + 10);
+      } else {
+        targetLuma = Math.min(targetLuma, entry.luma255 + 14);
+      }
+
+      targetLuma = Math.max(0, Math.min(255, targetLuma));
+
+      const adjustedRgb = shiftLiteLuma(entry.rgb, targetLuma);
+      const adjustedHex = normalizeHex(rgbToHex(adjustedRgb));
+
+      if (adjustedHex !== entry.hex) {
+        mapping.set(entry.hex, adjustedHex);
+      }
+
+      previousLuma = targetLuma;
+    }
+  }
+
+  if (mapping.size === 0) {
+    return pixelMap;
+  }
+
+  return reindexPixelMapByColorHex(
+    pixelMap.map((row) =>
+      row.map((pixel) => {
+        if (!isDrawablePixel(pixel)) {
+          return pixel;
+        }
+
+        const hex = normalizeHex(pixel.colorHex);
+        const mapped = mapping.get(hex);
+
+        if (!mapped) {
+          return pixel;
+        }
+
+        return {
+          ...pixel,
+          colorHex: mapped,
+        };
+      }),
+    ),
+  );
+}
+
+function shiftLiteLuma(rgb: Rgb, targetLuma: number): Rgb {
+  const current = getLuma255(rgb);
+  const delta = targetLuma - current;
+
+  return {
+    r: clampByte(rgb.r + delta),
+    g: clampByte(rgb.g + delta),
+    b: clampByte(rgb.b + delta),
+  };
+}
+
+function clampByte(value: number): number {
+  return Math.max(0, Math.min(255, Math.round(value)));
 }
 
 

@@ -999,8 +999,125 @@ function shouldStartFromCanvasCenter(profile: DrawingProfile): boolean {
   return profile.startCursor === "center";
 }
 
-function getUsedPaletteColors(pixelMap: PixelMap): Array<{ colorIndex: number; colorHex: string }> {
-  const colorByIndex = new Map<number, string>();
+
+function prioritiseLineLikePaletteColours(
+  colours: Array<{ colorIndex: number; colorHex: string; pixelCount?: number }>,
+): Array<{ colorIndex: number; colorHex: string; pixelCount?: number }> {
+  return [...colours].sort((a, b) => {
+    const aInfo = paletteColourPriorityInfo(a.colorHex, a.pixelCount ?? 0);
+    const bInfo = paletteColourPriorityInfo(b.colorHex, b.pixelCount ?? 0);
+
+    // 第一优先：线稿候选色必须排在普通填充色前。
+    if (aInfo.isLineLike !== bInfo.isLineLike) {
+      return aInfo.isLineLike ? -1 : 1;
+    }
+
+    if (aInfo.isLineLike && bInfo.isLineLike) {
+      // 第二优先：最深色先注入，确保 PC0 是最深的线稿/黑线候选。
+      if (aInfo.luma !== bInfo.luma) {
+        return aInfo.luma - bInfo.luma;
+      }
+
+      // 第三优先：同样深度时，像素更多的主勾线优先。
+      if (aInfo.pixelCount !== bInfo.pixelCount) {
+        return bInfo.pixelCount - aInfo.pixelCount;
+      }
+
+      // 第四优先：综合线稿分数。
+      if (aInfo.lineScore !== bInfo.lineScore) {
+        return bInfo.lineScore - aInfo.lineScore;
+      }
+
+      return a.colorIndex - b.colorIndex;
+    }
+
+    // 非线稿色保持原色号顺序，避免填充/阴影层次乱跳。
+    return a.colorIndex - b.colorIndex;
+  });
+}
+
+function paletteColourPriorityInfo(hex: string, pixelCount: number): {
+  isLineLike: boolean;
+  lineScore: number;
+  luma: number;
+  pixelCount: number;
+} {
+  const rgb = parsePaletteHexLite(hex);
+  const luma = rgb.r * 0.299 + rgb.g * 0.587 + rgb.b * 0.114;
+  const chroma = Math.max(rgb.r, rgb.g, rgb.b) - Math.min(rgb.r, rgb.g, rgb.b);
+
+  const isLineLike =
+    luma <= 58 ||
+    (luma <= 82 && chroma <= 32) ||
+    (luma <= 74 && chroma > 32);
+
+  // 像素数量权重要高：最深但只有几个像素的小装饰，不应排在主勾线前。
+  const countScore = Math.sqrt(Math.max(0, pixelCount)) * 18;
+  const darknessScore = Math.max(0, 105 - luma) * 2.8;
+  const lowChromaLineBonus = chroma <= 28 && luma <= 90 ? 35 : 0;
+  const darkColourLineBonus = chroma > 28 && luma <= 74 ? 18 : 0;
+
+  const lineScore =
+    (isLineLike ? 1000 : 0) +
+    countScore +
+    darknessScore +
+    lowChromaLineBonus +
+    darkColourLineBonus -
+    Math.max(0, chroma - 60) * 0.4;
+
+  return {
+    isLineLike,
+    lineScore,
+    luma,
+    pixelCount,
+  };
+}
+
+function lineLikePalettePriority(hex: string): number {
+  const rgb = parsePaletteHexLite(hex);
+  const luma = rgb.r * 0.299 + rgb.g * 0.587 + rgb.b * 0.114;
+  const chroma = Math.max(rgb.r, rgb.g, rgb.b) - Math.min(rgb.r, rgb.g, rgb.b);
+
+  let score = 0;
+
+  // 最重要：黑色 / 深灰线稿。
+  if (luma <= 42) {
+    score += 100;
+  } else if (luma <= 62) {
+    score += 72;
+  } else if (luma <= 85 && chroma <= 28) {
+    score += 45;
+  }
+
+  // 低饱和深色通常是轮廓、五官、阴影线。
+  if (chroma <= 22 && luma <= 95) {
+    score += 24;
+  }
+
+  // 有色深线，例如深棕、深蓝、深红，也应靠前。
+  if (chroma > 22 && luma <= 72) {
+    score += 18;
+  }
+
+  return score;
+}
+
+function parsePaletteHexLite(hex: string): { r: number; g: number; b: number } {
+  const normalized = hex.trim().replace(/^#/, "");
+  const value = normalized.length === 3
+    ? normalized.split("").map((char) => char + char).join("")
+    : normalized.padEnd(6, "0").slice(0, 6);
+
+  return {
+    r: Number.parseInt(value.slice(0, 2), 16) || 0,
+    g: Number.parseInt(value.slice(2, 4), 16) || 0,
+    b: Number.parseInt(value.slice(4, 6), 16) || 0,
+  };
+}
+
+
+function getUsedPaletteColors(pixelMap: PixelMap): Array<{ colorIndex: number; colorHex: string; pixelCount: number }> {
+  const colorByIndex = new Map<number, { colorHex: string; pixelCount: number }>();
 
   for (const row of pixelMap) {
     for (const pixel of row) {
@@ -1008,15 +1125,25 @@ function getUsedPaletteColors(pixelMap: PixelMap): Array<{ colorIndex: number; c
         continue;
       }
 
-      if (!colorByIndex.has(pixel.colorIndex)) {
-        colorByIndex.set(pixel.colorIndex, pixel.colorHex);
+      const existing = colorByIndex.get(pixel.colorIndex);
+      if (existing) {
+        existing.pixelCount += 1;
+      } else {
+        colorByIndex.set(pixel.colorIndex, {
+          colorHex: pixel.colorHex,
+          pixelCount: 1,
+        });
       }
     }
   }
 
-  return Array.from(colorByIndex.entries())
-    .sort((left, right) => left[0] - right[0])
-    .map(([colorIndex, colorHex]) => ({ colorIndex, colorHex }));
+  return [...colorByIndex.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([colorIndex, info]) => ({
+      colorIndex,
+      colorHex: info.colorHex,
+      pixelCount: info.pixelCount,
+    }));
 }
 
 function canExtendRun(run: Pixel[], pixel: Pixel): boolean {
@@ -1147,7 +1274,7 @@ export function generateScanlineCommands(
       current = appendOrderedPixels(commands, orderedPixels, current, profile, grid);
     }
   } else if (profile.colorMode === "palette") {
-    const usedColors = getUsedPaletteColors(pixelMap);
+    const usedColors = prioritiseLineLikePaletteColours(getUsedPaletteColors(pixelMap));
 
     for (let batchStart = 0; batchStart < usedColors.length; batchStart += PALETTE_SLOT_COUNT) {
       const batch = usedColors.slice(batchStart, batchStart + PALETTE_SLOT_COUNT);
