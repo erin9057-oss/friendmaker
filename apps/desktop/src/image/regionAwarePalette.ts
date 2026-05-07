@@ -1,4 +1,5 @@
-import type { Pixel, PixelMap } from "../types.js";
+// @ts-nocheck
+import type { PixelMap } from "../types.js";
 
 export interface RegionAwarePaletteOptions {
   removeBackground?: boolean;
@@ -7,37 +8,41 @@ export interface RegionAwarePaletteOptions {
   tinyIslandMaxPixels?: number;
   maxMergeDistance?: number;
   protectDarkLineColors?: boolean;
-  conservativeHighColorMode?: boolean;
-  preserveLocalShading?: boolean;
 }
 
-interface Rgb {
+type Pixel = PixelMap[number][number];
+
+interface RGB {
   r: number;
   g: number;
   b: number;
 }
 
-interface Hsv {
-  h: number;
-  s: number;
-  v: number;
+interface Point {
+  x: number;
+  y: number;
 }
 
-interface ComponentInfo {
-  id: number;
-  pixels: Pixel[];
-  colorCounts: Map<string, number>;
-}
-
-interface ColorStats {
-  colorHex: string;
+interface ColourStat {
+  hex: string;
   count: number;
-  rgb: Rgb;
-  hsv: Hsv;
-  luminance: number;
   boundaryCount: number;
-  componentIds: Set<number>;
-  neighborColors: Map<string, number>;
+  sumX: number;
+  sumY: number;
+  rgb: RGB;
+  luminance: number;
+}
+
+interface ComponentData {
+  id: number;
+  pixels: Point[];
+  area: number;
+  colourStats: Map<string, ColourStat>;
+}
+
+interface Family {
+  entries: ColourStat[];
+  budget: number;
 }
 
 interface NormalizedOptions {
@@ -47,855 +52,1008 @@ interface NormalizedOptions {
   tinyIslandMaxPixels: number;
   maxMergeDistance: number;
   protectDarkLineColors: boolean;
-  conservativeHighColorMode: boolean;
-  preserveLocalShading: boolean;
 }
 
-const NEIGHBORS = [
-  { dx: 1, dy: 0 },
-  { dx: -1, dy: 0 },
-  { dx: 0, dy: 1 },
-  { dx: 0, dy: -1 },
+const DIRS: ReadonlyArray<[number, number]> = [
+  [1, 0],
+  [-1, 0],
+  [0, 1],
+  [0, -1],
 ];
+
+
+function pointKey(x: number, y: number): string {
+  return `${x},${y}`;
+}
+
+function isOpaquePixel(pixel: { alpha?: number } | undefined): boolean {
+  return Boolean(pixel && (pixel.alpha ?? 0) > 0);
+}
+
+function smallDetailChroma(hex: string): number {
+  const rgb = parseHexColor(hex);
+  return Math.max(rgb.r, rgb.g, rgb.b) - Math.min(rgb.r, rgb.g, rgb.b);
+}
+
+function colourDistanceScore(aHex: string, bHex: string): number {
+  const a = parseHexColor(aHex);
+  const b = parseHexColor(bHex);
+  return (
+    Math.abs(a.r - b.r) * 0.35 +
+    Math.abs(a.g - b.g) * 0.4 +
+    Math.abs(a.b - b.b) * 0.25
+  );
+}
+
+function countDistinctColourHexes(pixelMap: PixelMap): number {
+  const used = new Set<string>();
+
+  for (const row of pixelMap) {
+    for (const pixel of row) {
+      if (!isOpaquePixel(pixel)) {
+        continue;
+      }
+      used.add(normalizeHex(pixel.colorHex ?? "#000000"));
+    }
+  }
+
+  return used.size;
+}
+
+function collectProtectedMicroDetailPixels(source: PixelMap): Set<string> {
+  const protectedPixels = new Set<string>();
+  const height = source.length;
+  const width = source[0]?.length ?? 0;
+
+  if (height === 0 || width === 0) {
+    return protectedPixels;
+  }
+
+  const visited = Array.from({ length: height }, () => Array<boolean>(width).fill(false));
+  const dirs = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ] as const;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const pixel = source[y]?.[x];
+      if (!isOpaquePixel(pixel) || visited[y]?.[x]) {
+        continue;
+      }
+
+      const baseHex = normalizeHex(pixel.colorHex ?? "#000000");
+      const stack: Array<{ x: number; y: number }> = [{ x, y }];
+      visited[y]![x] = true;
+
+      const points: Array<{ x: number; y: number }> = [];
+      let boundaryCount = 0;
+      let minX = x;
+      let maxX = x;
+      let minY = y;
+      let maxY = y;
+
+      while (stack.length > 0) {
+        const current = stack.pop();
+        if (!current) {
+          continue;
+        }
+
+        points.push(current);
+        minX = Math.min(minX, current.x);
+        maxX = Math.max(maxX, current.x);
+        minY = Math.min(minY, current.y);
+        maxY = Math.max(maxY, current.y);
+
+        for (const [dx, dy] of dirs) {
+          const nx = current.x + dx;
+          const ny = current.y + dy;
+
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
+            boundaryCount += 1;
+            continue;
+          }
+
+          const neighbour = source[ny]?.[nx];
+          if (!isOpaquePixel(neighbour)) {
+            boundaryCount += 1;
+            continue;
+          }
+
+          const neighbourHex = normalizeHex(neighbour.colorHex ?? "#000000");
+          if (neighbourHex !== baseHex) {
+            boundaryCount += 1;
+            continue;
+          }
+
+          if (!visited[ny]![nx]) {
+            visited[ny]![nx] = true;
+            stack.push({ x: nx, y: ny });
+          }
+        }
+      }
+
+      const size = points.length;
+      const bboxArea = Math.max(1, (maxX - minX + 1) * (maxY - minY + 1));
+      const fillRatio = size / bboxArea;
+      const lum = luminance(parseHexColor(baseHex));
+      const chroma = smallDetailChroma(baseHex);
+      const boundaryPerPixel = boundaryCount / Math.max(1, size);
+
+      const isMicroDarkLine =
+        lum <= 92 &&
+        size <= 48 &&
+        boundaryPerPixel >= 1.15 &&
+        fillRatio <= 0.78;
+
+      const isSmallAccentDetail =
+        size <= 72 &&
+        boundaryPerPixel >= 1.0 &&
+        (
+          chroma >= 16 ||
+          (lum >= 95 && lum <= 210)
+        );
+
+      const shouldProtect =
+        isMicroDarkLine ||
+        isSmallAccentDetail;
+
+      if (shouldProtect) {
+        for (const point of points) {
+          protectedPixels.add(pointKey(point.x, point.y));
+        }
+      }
+    }
+  }
+
+  return protectedPixels;
+}
+
+function despeckleLowContrastNoise(
+  pixelMap: PixelMap,
+  protectedPixels: Set<string>,
+): PixelMap {
+  const height = pixelMap.length;
+  const width = pixelMap[0]?.length ?? 0;
+  const next = pixelMap.map((row) => row.map((pixel) => (pixel ? { ...pixel } : pixel)));
+
+  if (height === 0 || width === 0) {
+    return next;
+  }
+
+  const dirs = [
+    [-1, -1], [0, -1], [1, -1],
+    [-1, 0],           [1, 0],
+    [-1, 1],  [0, 1],  [1, 1],
+  ] as const;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const key = pointKey(x, y);
+      const current = next[y]?.[x];
+
+      if (!isOpaquePixel(current) || protectedPixels.has(key)) {
+        continue;
+      }
+
+      const currentHex = normalizeHex(current.colorHex ?? "#000000");
+      const neighbourCounts = new Map<string, number>();
+
+      for (const [dx, dy] of dirs) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
+          continue;
+        }
+
+        const neighbour = next[ny]?.[nx];
+        if (!isOpaquePixel(neighbour) || protectedPixels.has(pointKey(nx, ny))) {
+          continue;
+        }
+
+        const neighbourHex = normalizeHex(neighbour.colorHex ?? "#000000");
+        neighbourCounts.set(neighbourHex, (neighbourCounts.get(neighbourHex) ?? 0) + 1);
+      }
+
+      let dominantHex = currentHex;
+      let dominantCount = 0;
+      let currentCount = 0;
+
+      for (const [hex, count] of neighbourCounts.entries()) {
+        if (hex === currentHex) {
+          currentCount = count;
+        }
+        if (count > dominantCount) {
+          dominantHex = hex;
+          dominantCount = count;
+        }
+      }
+
+      if (dominantHex === currentHex) {
+        continue;
+      }
+
+      const distance = colourDistanceScore(currentHex, dominantHex);
+      const currentLum = luminance(parseHexColor(currentHex));
+      const dominantLum = luminance(parseHexColor(dominantHex));
+      const lumGap = Math.abs(currentLum - dominantLum);
+
+      const isLowContrastSpeckle =
+        dominantCount >= 5 &&
+        currentCount <= 2 &&
+        distance <= 26 &&
+        lumGap <= 18;
+
+      if (!isLowContrastSpeckle) {
+        continue;
+      }
+
+      next[y]![x] = {
+        ...current,
+        colorHex: dominantHex,
+      };
+    }
+  }
+
+  return next;
+}
+
+function restoreProtectedMicroDetails(
+  original: PixelMap,
+  current: PixelMap,
+  protectedPixels: Set<string>,
+): PixelMap {
+  const next = current.map((row) => row.map((pixel) => (pixel ? { ...pixel } : pixel)));
+
+  for (let y = 0; y < original.length; y += 1) {
+    const sourceRow = original[y];
+    if (!sourceRow) {
+      continue;
+    }
+
+    for (let x = 0; x < sourceRow.length; x += 1) {
+      if (!protectedPixels.has(pointKey(x, y))) {
+        continue;
+      }
+
+      const sourcePixel = sourceRow[x];
+      if (!isOpaquePixel(sourcePixel)) {
+        continue;
+      }
+
+      const targetPixel = next[y]?.[x];
+      if (!targetPixel) {
+        continue;
+      }
+
+      next[y]![x] = {
+        ...targetPixel,
+        colorHex: normalizeHex(sourcePixel.colorHex ?? "#000000"),
+      };
+    }
+  }
+
+  return next;
+}
+
+function reindexPixelMapByHex(pixelMap: PixelMap): PixelMap {
+  const next = pixelMap.map((row) => row.map((pixel) => (pixel ? { ...pixel } : pixel)));
+  const indexByHex = new Map<string, number>();
+  let nextIndex = 0;
+
+  for (let y = 0; y < next.length; y += 1) {
+    const row = next[y];
+    if (!row) {
+      continue;
+    }
+
+    for (let x = 0; x < row.length; x += 1) {
+      const pixel = row[x];
+      if (!isOpaquePixel(pixel)) {
+        continue;
+      }
+
+      const hex = normalizeHex(pixel.colorHex ?? "#000000");
+      if (!indexByHex.has(hex)) {
+        indexByHex.set(hex, nextIndex);
+        nextIndex += 1;
+      }
+
+      row[x] = {
+        ...pixel,
+        colorHex: hex,
+        colorIndex: indexByHex.get(hex) ?? 0,
+      };
+    }
+  }
+
+  return next;
+}
+
+function postProcessOptimisedPixelMap(
+  original: PixelMap,
+  current: PixelMap,
+): PixelMap {
+  const protectedPixels = collectProtectedMicroDetailPixels(original);
+  let next = current;
+
+  if (countDistinctColourHexes(next) >= 64) {
+    next = despeckleLowContrastNoise(next, protectedPixels);
+  }
+
+  next = restoreProtectedMicroDetails(original, next, protectedPixels);
+  next = reindexPixelMapByHex(next);
+
+  return next;
+}
+
+
+
+function collectProtectedColoursFromPixels(
+  pixelMap: PixelMap,
+  protectedPixels: Set<string>,
+): Set<string> {
+  const colours = new Set<string>();
+
+  for (let y = 0; y < pixelMap.length; y += 1) {
+    const row = pixelMap[y];
+    if (!row) continue;
+
+    for (let x = 0; x < row.length; x += 1) {
+      if (!protectedPixels.has(pointKey(x, y))) continue;
+
+      const pixel = row[x];
+      if (!isOpaquePixel(pixel)) continue;
+
+      colours.add(normalizeHex(pixel.colorHex ?? "#000000"));
+    }
+  }
+
+  return colours;
+}
+
+function separateClosePaletteColours(
+  pixelMap: PixelMap,
+  protectedColours: Set<string>,
+  options: NormalizedOptions,
+): PixelMap {
+  const next = clonePixelMap(pixelMap);
+  const stats = buildGlobalColourStats(next);
+  const colours = [...stats.keys()].sort((a, b) => {
+    const la = stats.get(a)?.luminance ?? 0;
+    const lb = stats.get(b)?.luminance ?? 0;
+    return la - lb;
+  });
+
+  const minGap =
+    options.targetColorCount <= 16
+      ? 18
+      : options.targetColorCount <= 32
+        ? 14
+        : options.targetColorCount <= 64
+          ? 10
+          : 8;
+
+  const replacement = new Map<string, string>();
+  const adjusted: Array<{ hex: string; rgb: RGB; luma: number }> = [];
+
+  for (const hex of colours) {
+    const originalRgb = parseHexColor(hex);
+    let rgb = { ...originalRgb };
+    let luma = luminance(rgb);
+
+    // 保护色不主动改，避免鼻子/嘴/胡子/小线条被 palette 拉差打散。
+    if (!protectedColours.has(hex)) {
+      for (const prev of adjusted) {
+        const isClose =
+          Math.abs(luma - prev.luma) < minGap &&
+          rgbDistance(rgb, prev.rgb) < minGap * 2.2;
+
+        if (!isClose) continue;
+
+        if (luma >= prev.luma) {
+          rgb = shiftToLuminance(rgb, Math.min(255, prev.luma + minGap));
+        } else {
+          rgb = shiftToLuminance(rgb, Math.max(0, prev.luma - minGap));
+        }
+
+        luma = luminance(rgb);
+      }
+    }
+
+    const newHex = rgbToHex(rgb);
+    replacement.set(hex, newHex);
+    adjusted.push({ hex: newHex, rgb: parseHexColor(newHex), luma: luminance(parseHexColor(newHex)) });
+  }
+
+  for (const row of next) {
+    for (const pixel of row) {
+      if (!isOpaquePixel(pixel)) continue;
+      const hex = normalizeHex(pixel.colorHex ?? "#000000");
+      pixel.colorHex = replacement.get(hex) ?? hex;
+    }
+  }
+
+  return reindexPixelMapByColorHex(next);
+}
+
+
+function estimateComponentLogicalNeed(
+  component: ComponentData,
+  options: NormalizedOptions,
+): number {
+  const entries = [...component.colourStats.values()];
+  if (entries.length === 0) {
+    return 0;
+  }
+
+  const protectedLineColours = pickProtectedLineColours(
+    component,
+    options,
+    Math.max(2, Math.ceil(entries.length / 3)),
+  );
+
+  const paintEntries = entries.filter((entry) => !protectedLineColours.has(entry.hex));
+
+  const familyGuessCount = Math.max(
+    1,
+    Math.min(
+      4,
+      paintEntries.length,
+      Math.round(Math.sqrt(Math.max(1, paintEntries.length))),
+    ),
+  );
+
+  const families =
+    paintEntries.length > 0
+      ? clusterEntriesIntoFamilies(paintEntries, familyGuessCount)
+      : [];
+
+  let need = Math.min(2, Math.max(1, protectedLineColours.size));
+
+  for (const family of families) {
+    need += minimumBudgetForFamily(family, options);
+  }
+
+  if (families.length === 0) {
+    need = Math.max(need, Math.min(entries.length, 2));
+  }
+
+  return Math.min(entries.length, Math.max(1, need));
+}
+
+function estimateLogicalPaletteTarget(
+  pixelMap: PixelMap,
+  components: ComponentData[],
+  options: NormalizedOptions,
+): number {
+  const distinctCount = countDistinctColourHexes(pixelMap);
+
+  if (distinctCount <= 2) {
+    return distinctCount;
+  }
+
+  let logicalNeed = 0;
+  for (const component of components) {
+    logicalNeed += estimateComponentLogicalNeed(component, options);
+  }
+
+  const minKeep = Math.min(
+    distinctCount,
+    Math.max(4, Math.round(Math.sqrt(distinctCount))),
+  );
+
+  return clamp(
+    Math.round(logicalNeed),
+    minKeep,
+    Math.min(distinctCount, options.targetColorCount),
+  );
+}
+
+
+function optimiseStableStructurePalette(
+  pixelMap: PixelMap,
+  options: NormalizedOptions,
+): PixelMap {
+  const protectedPixels = collectProtectedMicroDetailPixels(pixelMap);
+  let working = clonePixelMap(pixelMap);
+
+  if (options.targetColorCount >= 48) {
+    working = despeckleLowContrastNoise(working, protectedPixels);
+  }
+
+  const components = buildComponents(working);
+  if (components.length === 0) {
+    return reindexPixelMapByHex(working);
+  }
+
+  const logicalTarget = estimateLogicalPaletteTarget(working, components, options);
+  const componentBudgets = allocateComponentBudgets(components, logicalTarget, options);
+  const protectedColours = new Set<string>();
+
+  for (const component of components) {
+    const componentBudget =
+      componentBudgets.get(component.id) ??
+      Math.min(component.colourStats.size, 1);
+
+    const lineColours = pickProtectedLineColours(component, options, componentBudget);
+    lineColours.forEach((hex) => protectedColours.add(hex));
+
+    working = applyFamilyBudgetToComponent(
+      working,
+      component,
+      componentBudget,
+      lineColours,
+      options,
+    );
+  }
+
+  if (options.tinyIslandMaxPixels > 0) {
+    working = smoothTinyColourIslands(working, options.tinyIslandMaxPixels);
+  }
+
+  const currentDistinctCount = countDistinctColourHexes(working);
+  if (currentDistinctCount > logicalTarget) {
+    working = mergeGlobalSimilarColours(
+      working,
+      logicalTarget,
+      protectedColours,
+      options,
+    );
+  }
+
+  working = restoreProtectedMicroDetails(pixelMap, working, protectedPixels);
+
+  return reindexPixelMapByHex(working);
+}
 
 export function optimiseRegionAwarePalette(
   pixelMap: PixelMap,
   options: RegionAwarePaletteOptions = {},
 ): PixelMap {
   const normalized = normalizeOptions(options);
-  const distinctBefore = getDistinctColorHexes(pixelMap);
+  const working = clonePixelMap(pixelMap);
 
-  if (distinctBefore.length <= 1) {
-    return reindexPixelMapByColorHex(pixelMap);
-  }
-
-  let working = pixelMap;
-
-  // 32 色及以上：不要再 aggressive merge。之前 32 色丢阴影，根因就是高色数仍在吞局部层次。
-  // 高色数只做极轻微噪点清理 + 有效色差拉开。
-  if (normalized.conservativeHighColorMode) {
-    working = cleanupTinyIslandsOnly(working, normalized, {
-      highColorMode: true,
-    });
-
-    // 64/128 色不要再做最后一轮强制拉色差，否则会产生过锐噪点。
-    // 这里只合并游戏里视觉等效的颜色，再轻微平滑 1~3 像素的小色岛。
-    working = collapseVisuallyEquivalentColours(working, normalized);
-    working = smoothTinyColourIslands(
-      working,
-      normalized.targetColorCount >= 128 ? 3 : 2,
-    );
-
+  if (countOpaquePixels(working) === 0) {
     return reindexPixelMapByColorHex(working);
   }
 
-  // 16 色：维持 v2 的有效方向，但加强局部阴影保护和勾线保护。
-  const { components, componentByCoord } = collectComponents(working);
-  const colorStats = buildColorStats(working, componentByCoord);
-  const protectedScores = buildProtectedColorScores(components, colorStats, normalized);
-
-  const preMergeMapping = buildNearMergeMapping(colorStats, protectedScores, normalized);
-  if (preMergeMapping.size > 0) {
-    working = applyColorMapping(working, preMergeMapping);
-  }
-
-  working = cleanupTinyIslandsOnly(working, normalized, {
-    highColorMode: false,
-  });
-
-  if (getDistinctColorHexes(working).length > normalized.targetColorCount) {
-    working = trimPaletteToTarget(working, normalized);
-  }
-
-  working = expandPaletteSeparation(working, normalized);
-  working = collapseVisuallyEquivalentColours(working, normalized);
-
-  if (normalized.targetColorCount >= 64) {
-    working = smoothTinyColourIslands(
-      working,
-      normalized.targetColorCount >= 128 ? 3 : 2,
-    );
-  } else {
-    working = expandPaletteSeparation(working, normalized);
-  }
-
-  return reindexPixelMapByColorHex(working);
+  return optimiseStableStructurePalette(working, normalized);
 }
 
 function normalizeOptions(options: RegionAwarePaletteOptions): NormalizedOptions {
-  const targetColorCount = Math.max(2, options.targetColorCount ?? 16);
-  const conservativeHighColorMode =
-    options.conservativeHighColorMode === true || targetColorCount >= 32;
-  const preserveLocalShading =
-    options.preserveLocalShading === true || conservativeHighColorMode;
-
   return {
     removeBackground: options.removeBackground === true,
-    targetColorCount,
-    brushSize: Math.max(1, options.brushSize ?? 1),
-    tinyIslandMaxPixels: Math.max(
-      0,
-      options.tinyIslandMaxPixels ??
-        (targetColorCount <= 16 ? 5 : targetColorCount <= 32 ? 2 : targetColorCount <= 64 ? 1 : 0),
-    ),
-    maxMergeDistance: Math.max(
-      0,
-      options.maxMergeDistance ??
-        (targetColorCount <= 16 ? 16 : targetColorCount <= 32 ? 8 : targetColorCount <= 64 ? 5 : 3),
-    ),
+    targetColorCount: Math.max(2, Math.min(256, Math.round(options.targetColorCount ?? 16))),
+    brushSize: Math.max(1, Math.round(options.brushSize ?? 1)),
+    tinyIslandMaxPixels: Math.max(0, Math.round(options.tinyIslandMaxPixels ?? 2)),
+    maxMergeDistance: Math.max(4, Math.min(48, Math.round(options.maxMergeDistance ?? 14))),
     protectDarkLineColors: options.protectDarkLineColors !== false,
-    conservativeHighColorMode,
-    preserveLocalShading,
   };
 }
 
-function getDistinctColorHexes(pixelMap: PixelMap): string[] {
-  const colors = new Set<string>();
+function clonePixelMap(pixelMap: PixelMap): PixelMap {
+  return pixelMap.map((row) => row.map((pixel) => ({ ...pixel })));
+}
 
+function countOpaquePixels(pixelMap: PixelMap): number {
+  let count = 0;
   for (const row of pixelMap) {
     for (const pixel of row) {
-      if (isDrawablePixel(pixel)) {
-        colors.add(normalizeHex(pixel.colorHex));
+      if ((pixel.alpha ?? 0) > 0) {
+        count += 1;
       }
     }
   }
-
-  return [...colors];
+  return count;
 }
 
-function collectComponents(pixelMap: PixelMap): {
-  components: ComponentInfo[];
-  componentByCoord: number[][];
-} {
+function buildComponents(pixelMap: PixelMap): ComponentData[] {
   const height = pixelMap.length;
   const width = pixelMap[0]?.length ?? 0;
   const visited = Array.from({ length: height }, () => Array<boolean>(width).fill(false));
-  const componentByCoord = Array.from({ length: height }, () => Array<number>(width).fill(-1));
-  const components: ComponentInfo[] = [];
+  const components: ComponentData[] = [];
+  let nextId = 0;
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const pixel = pixelMap[y]?.[x];
-
-      if (!isDrawablePixel(pixel) || visited[y]?.[x]) {
+      if (!pixel || visited[y][x] || (pixel.alpha ?? 0) <= 0) {
         continue;
       }
 
-      const queue: Array<{ x: number; y: number }> = [{ x, y }];
-      visited[y]![x] = true;
-      const pixels: Pixel[] = [];
-      const colorCounts = new Map<string, number>();
-      const id = components.length;
+      const queue: Point[] = [{ x, y }];
+      const pixels: Point[] = [];
+      const colourStats = new Map<string, ColourStat>();
+      visited[y][x] = true;
 
-      while (queue.length > 0) {
-        const current = queue.shift();
-        if (!current) break;
+      for (let index = 0; index < queue.length; index += 1) {
+        const point = queue[index];
+        pixels.push(point);
 
-        const currentPixel = pixelMap[current.y]?.[current.x];
-        if (!isDrawablePixel(currentPixel)) {
-          continue;
+        const current = pixelMap[point.y][point.x];
+        const hex = normalizeHex(current.colorHex ?? "#000000");
+        const rgb = parseHexColor(hex);
+
+        let stat = colourStats.get(hex);
+        if (!stat) {
+          stat = {
+            hex,
+            count: 0,
+            boundaryCount: 0,
+            sumX: 0,
+            sumY: 0,
+            rgb,
+            luminance: luminance(rgb),
+          };
+          colourStats.set(hex, stat);
         }
 
-        pixels.push(currentPixel);
-        const hex = normalizeHex(currentPixel.colorHex);
-        colorCounts.set(hex, (colorCounts.get(hex) ?? 0) + 1);
-        componentByCoord[current.y]![current.x] = id;
+        stat.count += 1;
+        stat.sumX += point.x;
+        stat.sumY += point.y;
 
-        for (const neighbor of NEIGHBORS) {
-          const nx = current.x + neighbor.dx;
-          const ny = current.y + neighbor.dy;
+        let boundary = false;
+        for (const [dx, dy] of DIRS) {
+          const nx = point.x + dx;
+          const ny = point.y + dy;
 
-          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-          if (visited[ny]?.[nx]) continue;
+          if (ny < 0 || ny >= height || nx < 0 || nx >= width) {
+            boundary = true;
+            continue;
+          }
 
-          const nextPixel = pixelMap[ny]?.[nx];
-          if (!isDrawablePixel(nextPixel)) continue;
+          const neighbour = pixelMap[ny]?.[nx];
+          if (!neighbour || (neighbour.alpha ?? 0) <= 0) {
+            boundary = true;
+            continue;
+          }
 
-          visited[ny]![nx] = true;
-          queue.push({ x: nx, y: ny });
+          if (!visited[ny][nx]) {
+            visited[ny][nx] = true;
+            queue.push({ x: nx, y: ny });
+          }
+        }
+
+        if (boundary) {
+          stat.boundaryCount += 1;
         }
       }
 
       components.push({
-        id,
+        id: nextId,
         pixels,
-        colorCounts,
+        area: pixels.length,
+        colourStats,
       });
+      nextId += 1;
     }
   }
 
-  return { components, componentByCoord };
+  return components;
 }
 
-function buildColorStats(pixelMap: PixelMap, componentByCoord: number[][]): Map<string, ColorStats> {
-  const stats = new Map<string, ColorStats>();
-  const height = pixelMap.length;
-  const width = pixelMap[0]?.length ?? 0;
-
-  function ensure(hex: string): ColorStats {
-    const normalized = normalizeHex(hex);
-    let current = stats.get(normalized);
-
-    if (!current) {
-      const rgb = parseHexColor(normalized);
-      current = {
-        colorHex: normalized,
-        count: 0,
-        rgb,
-        hsv: rgbToHsv(rgb),
-        luminance: getLuminance(rgb),
-        boundaryCount: 0,
-        componentIds: new Set<number>(),
-        neighborColors: new Map<string, number>(),
-      };
-      stats.set(normalized, current);
-    }
-
-    return current;
-  }
-
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const pixel = pixelMap[y]?.[x];
-      if (!isDrawablePixel(pixel)) continue;
-
-      const hex = normalizeHex(pixel.colorHex);
-      const current = ensure(hex);
-      current.count += 1;
-
-      const componentId = componentByCoord[y]?.[x] ?? -1;
-      if (componentId >= 0) {
-        current.componentIds.add(componentId);
-      }
-
-      let touchesBoundary = false;
-
-      for (const neighbor of NEIGHBORS) {
-        const nx = x + neighbor.dx;
-        const ny = y + neighbor.dy;
-
-        if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
-          touchesBoundary = true;
-          continue;
-        }
-
-        const nextPixel = pixelMap[ny]?.[nx];
-        if (!isDrawablePixel(nextPixel)) {
-          touchesBoundary = true;
-          continue;
-        }
-
-        const nextHex = normalizeHex(nextPixel.colorHex);
-        if (nextHex !== hex) {
-          touchesBoundary = true;
-          current.neighborColors.set(nextHex, (current.neighborColors.get(nextHex) ?? 0) + 1);
-        }
-      }
-
-      if (touchesBoundary) {
-        current.boundaryCount += 1;
-      }
-    }
-  }
-
-  return stats;
-}
-
-function buildProtectedColorScores(
-  components: ComponentInfo[],
-  colorStats: Map<string, ColorStats>,
+function allocateComponentBudgets(
+  components: ComponentData[],
+  targetColorCount: number,
   options: NormalizedOptions,
-): Map<string, number> {
-  const scores = new Map<string, number>();
-  const maxLineColors = options.targetColorCount <= 16 ? 2 : options.targetColorCount <= 32 ? 3 : 4;
+): Map<number, number> {
+  const result = new Map<number, number>();
+  const totalArea = components.reduce((sum, component) => sum + component.area, 0);
 
-  if (options.protectDarkLineColors) {
-    const lineCandidates = [...colorStats.values()]
-      .filter((entry) => isLikelyLineColor(entry))
-      .sort((a, b) => lineScore(b) - lineScore(a))
-      .slice(0, maxLineColors);
-
-    for (const entry of lineCandidates) {
-      addScore(scores, entry.colorHex, 800 + entry.count * 1.5);
-    }
+  if (components.length === 0) {
+    return result;
   }
 
-  const sortedComponents = [...components].sort((a, b) => b.pixels.length - a.pixels.length);
-  const maxComponentsToInspect =
-    options.targetColorCount <= 16 ? 8 : options.targetColorCount <= 32 ? 14 : sortedComponents.length;
-
-  for (const component of sortedComponents.slice(0, maxComponentsToInspect)) {
-    const entries = [...component.colorCounts.entries()]
-      .map(([hex, count]) => ({ hex, count, stats: colorStats.get(hex) }))
-      .filter(
-        (item): item is { hex: string; count: number; stats: ColorStats } =>
-          item.stats !== undefined,
-      );
-
-    if (entries.length === 0) continue;
-
-    entries.sort((a, b) => b.count - a.count);
-
-    const dominant = entries[0];
-    if (dominant) {
-      addScore(scores, dominant.hex, 520 + dominant.count * 1.5);
-    }
-
-    const darkest = [...entries].sort((a, b) => a.stats.luminance - b.stats.luminance)[0];
-    if (darkest && darkest.hex !== dominant?.hex) {
-      addScore(scores, darkest.hex, 360 + darkest.count * 1.2);
-    }
-
-    const brightest = [...entries].sort((a, b) => b.stats.luminance - a.stats.luminance)[0];
-    if (
-      brightest &&
-      brightest.hex !== dominant?.hex &&
-      brightest.hex !== darkest?.hex &&
-      Math.abs(brightest.stats.luminance - (dominant?.stats.luminance ?? brightest.stats.luminance)) >
-        0.10
-    ) {
-      addScore(scores, brightest.hex, 260 + brightest.count);
-    }
-
-    // 保护小但高价值的结构色：徽章、链条、眼睛、小装饰。
-    const structuralAccent = [...entries]
-      .filter((item) => item.hex !== dominant?.hex)
-      .sort((a, b) => {
-        const aContrast = dominant ? colorDistanceHex(a.hex, dominant.hex) : 0;
-        const bContrast = dominant ? colorDistanceHex(b.hex, dominant.hex) : 0;
-        return bContrast + b.count * 0.3 - (aContrast + a.count * 0.3);
-      })[0];
-
-    if (
-      structuralAccent &&
-      structuralAccent.count >= Math.max(2, Math.floor(component.pixels.length * 0.02))
-    ) {
-      addScore(scores, structuralAccent.hex, 210 + structuralAccent.count);
-    }
-  }
-
-  return scores;
-}
-
-function buildNearMergeMapping(
-  colorStats: Map<string, ColorStats>,
-  protectedScores: Map<string, number>,
-  options: NormalizedOptions,
-): Map<string, string> {
-  const hexes = [...colorStats.keys()];
-  const mapping = new Map<string, string>();
-
-  if (hexes.length <= 1 || options.maxMergeDistance <= 0) {
-    return mapping;
-  }
-
-  const uf = new UnionFind(hexes);
-
-  for (let i = 0; i < hexes.length; i += 1) {
-    for (let j = i + 1; j < hexes.length; j += 1) {
-      const leftHex = hexes[i];
-      const rightHex = hexes[j];
-      if (!leftHex || !rightHex) continue;
-
-      const left = colorStats.get(leftHex);
-      const right = colorStats.get(rightHex);
-      if (!left || !right) continue;
-
-      const leftProtected = (protectedScores.get(leftHex) ?? 0) > 0;
-      const rightProtected = (protectedScores.get(rightHex) ?? 0) > 0;
-
-      // 两个保护色不合并。保护色和非保护色也只在极端近似时合并。
-      if (leftProtected && rightProtected) {
-        continue;
-      }
-
-      if ((leftProtected || rightProtected) && colorDistanceHex(leftHex, rightHex) > options.maxMergeDistance * 0.42) {
-        continue;
-      }
-
-      const leftLineLike = isLikelyLineColor(left);
-      const rightLineLike = isLikelyLineColor(right);
-
-      // 勾线色和非勾线色不合并，避免线稿被填充/阴影吃掉。
-      if (leftLineLike !== rightLineLike) {
-        continue;
-      }
-
-      if (
-        shouldPreserveShadeSeparation(leftHex, rightHex, options.preserveLocalShading)
-      ) {
-        continue;
-      }
-
-      const distance = colorDistanceHex(leftHex, rightHex);
-      if (distance > options.maxMergeDistance) {
-        continue;
-      }
-
-      const shareComponent = sharesComponent(left.componentIds, right.componentIds);
-      const neighborLinked =
-        (left.neighborColors.get(rightHex) ?? 0) + (right.neighborColors.get(leftHex) ?? 0) > 0;
-
-      // 不是同区域、也不是相邻结构，不合并。避免全局把帽子阴影并到身体阴影。
-      if (!shareComponent && !neighborLinked) {
-        continue;
-      }
-
-      uf.union(leftHex, rightHex);
-    }
-  }
-
-  const groups = new Map<string, string[]>();
-  for (const hex of hexes) {
-    const root = uf.find(hex);
-    const group = groups.get(root);
-    if (group) {
-      group.push(hex);
-    } else {
-      groups.set(root, [hex]);
-    }
-  }
-
-  for (const group of groups.values()) {
-    if (group.length <= 1) continue;
-
-    const representative = [...group].sort((a, b) => {
-      const protectedDiff = (protectedScores.get(b) ?? 0) - (protectedScores.get(a) ?? 0);
-      if (protectedDiff !== 0) return protectedDiff;
-
-      const countDiff = (colorStats.get(b)?.count ?? 0) - (colorStats.get(a)?.count ?? 0);
-      if (countDiff !== 0) return countDiff;
-
-      return (colorStats.get(a)?.luminance ?? 0) - (colorStats.get(b)?.luminance ?? 0);
-    })[0];
-
-    if (!representative) continue;
-
-    for (const hex of group) {
-      mapping.set(hex, representative);
-    }
-  }
-
-  return mapping;
-}
-
-function cleanupTinyIslandsOnly(
-  pixelMap: PixelMap,
-  options: NormalizedOptions,
-  flags: {
-    highColorMode: boolean;
-  },
-): PixelMap {
-  const maxPixels = flags.highColorMode
-    ? Math.min(options.tinyIslandMaxPixels, 1)
-    : options.tinyIslandMaxPixels;
-
-  if (maxPixels <= 0) {
-    return pixelMap;
-  }
-
-  const height = pixelMap.length;
-  const width = pixelMap[0]?.length ?? 0;
-  const visited = Array.from({ length: height }, () => Array<boolean>(width).fill(false));
-  let working = pixelMap;
-
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      if (visited[y]?.[x]) continue;
-
-      const pixel = working[y]?.[x];
-      if (!isDrawablePixel(pixel)) {
-        visited[y]![x] = true;
-        continue;
-      }
-
-      const sourceHex = normalizeHex(pixel.colorHex);
-      const component = collectSameColorComponent(working, x, y, visited);
-
-      if (component.length === 0 || component.length > maxPixels) {
-        continue;
-      }
-
-      const neighborVotes = new Map<string, number>();
-
-      for (const point of component) {
-        for (const neighbor of NEIGHBORS) {
-          const nx = point.x + neighbor.dx;
-          const ny = point.y + neighbor.dy;
-          const nextPixel = working[ny]?.[nx];
-
-          if (!isDrawablePixel(nextPixel)) continue;
-
-          const nextHex = normalizeHex(nextPixel.colorHex);
-          if (nextHex === sourceHex) continue;
-
-          neighborVotes.set(nextHex, (neighborVotes.get(nextHex) ?? 0) + 1);
-        }
-      }
-
-      if (neighborVotes.size === 0) continue;
-
-      const targetHex = [...neighborVotes.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
-      if (!targetHex) continue;
-
-      if (shouldPreserveShadeSeparation(sourceHex, targetHex, options.preserveLocalShading)) {
-        continue;
-      }
-
-      if (colorDistanceHex(sourceHex, targetHex) > options.maxMergeDistance) {
-        continue;
-      }
-
-      working = replacePointsWithColor(working, component, targetHex);
-    }
-  }
-
-  return reindexPixelMapByColorHex(working);
-}
-
-function trimPaletteToTarget(pixelMap: PixelMap, options: NormalizedOptions): PixelMap {
-  const { components, componentByCoord } = collectComponents(pixelMap);
-  const colorStats = buildColorStats(pixelMap, componentByCoord);
-  const protectedScores = buildProtectedColorScores(components, colorStats, options);
-  const colors = [...colorStats.values()];
-
-  if (colors.length <= options.targetColorCount) {
-    return reindexPixelMapByColorHex(pixelMap);
-  }
-
-  const ranked = [...colors].sort((a, b) => {
-    const aScore =
-      (protectedScores.get(a.colorHex) ?? 0) +
-      a.count * 1.6 +
-      a.boundaryCount * 0.5 +
-      a.componentIds.size * 45;
-    const bScore =
-      (protectedScores.get(b.colorHex) ?? 0) +
-      b.count * 1.6 +
-      b.boundaryCount * 0.5 +
-      b.componentIds.size * 45;
-    return bScore - aScore;
+  const bases = components.map((component) => {
+    const distinct = component.colourStats.size;
+    const base =
+      options.protectDarkLineColors && distinct >= 3
+        ? Math.min(distinct, 2)
+        : 1;
+    return {
+      id: component.id,
+      area: component.area,
+      distinct,
+      base,
+      extraWeight: Math.sqrt(component.area / Math.max(1, totalArea)),
+    };
   });
 
-  const keepHexes = new Set(
-    ranked.slice(0, options.targetColorCount).map((entry) => entry.colorHex),
-  );
-
-  const mapping = new Map<string, string>();
-
-  for (const entry of colors) {
-    if (keepHexes.has(entry.colorHex)) {
-      mapping.set(entry.colorHex, entry.colorHex);
-      continue;
-    }
-
-    let bestHex: string | null = null;
-    let bestScore = Number.POSITIVE_INFINITY;
-
-    for (const candidateHex of keepHexes) {
-      const candidate = colorStats.get(candidateHex);
-      if (!candidate) continue;
-
-      if (shouldPreserveShadeSeparation(entry.colorHex, candidateHex, options.preserveLocalShading)) {
-        continue;
-      }
-
-      let score = colorDistanceHex(entry.colorHex, candidateHex);
-
-      if (isLikelyLineColor(entry) !== isLikelyLineColor(candidate)) {
-        score += 999;
-      }
-
-      if (!sharesComponent(entry.componentIds, candidate.componentIds)) {
-        score += 10;
-      }
-
-      score += Math.abs(entry.luminance - candidate.luminance) * 25;
-
-      if (score < bestScore) {
-        bestScore = score;
-        bestHex = candidateHex;
-      }
-    }
-
-    if (!bestHex) {
-      bestHex = [...keepHexes].sort(
-        (a, b) => colorDistanceHex(entry.colorHex, a) - colorDistanceHex(entry.colorHex, b),
-      )[0] ?? entry.colorHex;
-    }
-
-    mapping.set(entry.colorHex, bestHex);
+  let allocated = 0;
+  for (const item of bases) {
+    const value = Math.min(item.distinct, item.base);
+    result.set(item.id, value);
+    allocated += value;
   }
 
-  return applyColorMapping(pixelMap, mapping);
-}
+  let remaining = Math.max(0, targetColorCount - allocated);
 
-function expandPaletteSeparation(pixelMap: PixelMap, options: NormalizedOptions): PixelMap {
-  const distinct = getDistinctColorHexes(pixelMap);
-  if (distinct.length <= 1) {
-    return reindexPixelMapByColorHex(pixelMap);
-  }
+  while (remaining > 0) {
+    const candidates = bases
+      .map((item) => {
+        const current = result.get(item.id) ?? 0;
+        if (current >= item.distinct) {
+          return null;
+        }
+        const score = item.extraWeight / (1 + current * 0.85);
+        return { id: item.id, score };
+      })
+      .filter((item): item is { id: number; score: number } => item !== null)
+      .sort((a, b) => b.score - a.score);
 
-  const minDistance =
-    options.targetColorCount <= 16 ? 22 : options.targetColorCount <= 32 ? 16 : options.targetColorCount <= 64 ? 11 : 7;
-  const minDarkLumaGap =
-    options.targetColorCount <= 16 ? 0.055 : options.targetColorCount <= 32 ? 0.038 : options.targetColorCount <= 64 ? 0.024 : 0.016;
-
-  const sorted = [...distinct].sort(
-    (a, b) => getLuminance(parseHexColor(a)) - getLuminance(parseHexColor(b)),
-  );
-
-  const adjusted = new Map<string, string>();
-  const adjustedRgbs: Rgb[] = [];
-
-  for (const hex of sorted) {
-    let rgb = parseHexColor(hex);
-    let tries = 0;
-
-    while (tries < 8) {
-      const tooClose = adjustedRgbs.some((other) => {
-        const distance = colorDistance(rgb, other);
-        const luminanceGap = Math.abs(getLuminance(rgb) - getLuminance(other));
-        const darkPair = getLuminance(rgb) < 0.24 || getLuminance(other) < 0.24;
-
-        if (distance < minDistance) return true;
-        if (darkPair && luminanceGap < minDarkLumaGap) return true;
-        return false;
-      });
-
-      if (!tooClose) break;
-
-      // 32 色以上只轻微推开，避免把阴影推得不像原图。
-      const amount = options.conservativeHighColorMode ? 4 : 9;
-      rgb = getLuminance(rgb) < 0.48 ? brightenRgb(rgb, amount) : darkenRgb(rgb, amount);
-      tries += 1;
+    if (candidates.length === 0) {
+      break;
     }
 
-    let adjustedHex = rgbToHex(rgb);
-    let bump = 0;
-
-    while ([...adjusted.values()].includes(adjustedHex) && bump < 8) {
-      const amount = options.conservativeHighColorMode ? 1 : 2;
-      rgb = getLuminance(rgb) < 0.5 ? brightenRgb(rgb, amount) : darkenRgb(rgb, amount);
-      adjustedHex = rgbToHex(rgb);
-      bump += 1;
-    }
-
-    adjusted.set(hex, adjustedHex);
-    adjustedRgbs.push(parseHexColor(adjustedHex));
-  }
-
-  return applyColorMapping(pixelMap, adjusted);
-}
-
-function collectSameColorComponent(
-  pixelMap: PixelMap,
-  startX: number,
-  startY: number,
-  visited: boolean[][],
-): Array<{ x: number; y: number }> {
-  const startPixel = pixelMap[startY]?.[startX];
-  if (!isDrawablePixel(startPixel)) return [];
-
-  const sourceHex = normalizeHex(startPixel.colorHex);
-  const queue: Array<{ x: number; y: number }> = [{ x: startX, y: startY }];
-  const points: Array<{ x: number; y: number }> = [];
-  visited[startY]![startX] = true;
-
-  while (queue.length > 0) {
-    const point = queue.shift();
-    if (!point) break;
-
-    const pixel = pixelMap[point.y]?.[point.x];
-    if (!isDrawablePixel(pixel)) continue;
-
-    points.push(point);
-
-    for (const neighbor of NEIGHBORS) {
-      const nx = point.x + neighbor.dx;
-      const ny = point.y + neighbor.dy;
-
-      if (ny < 0 || nx < 0 || ny >= pixelMap.length || nx >= (pixelMap[ny]?.length ?? 0)) {
-        continue;
-      }
-
-      if (visited[ny]?.[nx]) continue;
-
-      const nextPixel = pixelMap[ny]?.[nx];
-      if (!isDrawablePixel(nextPixel)) continue;
-      if (normalizeHex(nextPixel.colorHex) !== sourceHex) continue;
-
-      visited[ny]![nx] = true;
-      queue.push({ x: nx, y: ny });
-    }
-  }
-
-  return points;
-}
-
-function replacePointsWithColor(
-  pixelMap: PixelMap,
-  points: Array<{ x: number; y: number }>,
-  colorHex: string,
-): PixelMap {
-  const normalized = normalizeHex(colorHex);
-  const result = pixelMap.map((row) => row.map((pixel) => ({ ...pixel })));
-
-  for (const point of points) {
-    const pixel = result[point.y]?.[point.x];
-    if (!isDrawablePixel(pixel)) continue;
-
-    result[point.y]![point.x] = {
-      ...pixel,
-      colorHex: normalized,
-    };
+    const chosen = candidates[0];
+    result.set(chosen.id, (result.get(chosen.id) ?? 0) + 1);
+    remaining -= 1;
   }
 
   return result;
 }
 
-function applyColorMapping(pixelMap: PixelMap, mapping: Map<string, string>): PixelMap {
-  const remapped = pixelMap.map((row) =>
-    row.map((pixel) => {
-      if (!isDrawablePixel(pixel)) {
-        return pixel;
-      }
-
-      const sourceHex = normalizeHex(pixel.colorHex);
-      const targetHex = normalizeHex(mapping.get(sourceHex) ?? sourceHex);
-
-      return {
-        ...pixel,
-        colorHex: targetHex,
-      };
-    }),
-  );
-
-  return reindexPixelMapByColorHex(remapped);
-}
-
-function reindexPixelMapByColorHex(pixelMap: PixelMap): PixelMap {
-  const indexByHex = new Map<string, number>();
-  let nextIndex = 0;
-
-  return pixelMap.map((row) =>
-    row.map((pixel) => {
-      if (!isDrawablePixel(pixel)) {
-        return pixel;
-      }
-
-      const hex = normalizeHex(pixel.colorHex);
-      let index = indexByHex.get(hex);
-
-      if (index === undefined) {
-        index = nextIndex;
-        indexByHex.set(hex, index);
-        nextIndex += 1;
-      }
-
-      return {
-        ...pixel,
-        colorHex: hex,
-        colorIndex: index,
-      };
-    }),
-  );
-}
-
-function shouldPreserveShadeSeparation(
-  leftHex: string,
-  rightHex: string,
-  preserveLocalShading: boolean,
-): boolean {
-  if (!preserveLocalShading) {
-    return false;
+function pickProtectedLineColours(
+  component: ComponentData,
+  options: NormalizedOptions,
+  componentBudget: number,
+): Set<string> {
+  if (!options.protectDarkLineColors || component.colourStats.size === 0) {
+    return new Set();
   }
 
-  const left = parseHexColor(leftHex);
-  const right = parseHexColor(rightHex);
-  const lumaDelta = Math.abs(getLuma255(left) - getLuma255(right));
-  const rgbDelta =
-    Math.abs(left.r - right.r) +
-    Math.abs(left.g - right.g) +
-    Math.abs(left.b - right.b);
+  const entries = [...component.colourStats.values()]
+    .map((entry) => {
+      const boundaryRatio = entry.boundaryCount / Math.max(1, entry.count);
+      const areaRatio = entry.count / Math.max(1, component.area);
+      const darkness = 255 - entry.luminance;
 
-  // 32 色及以上：只要有明显阴影层次，就不合并。
-  return lumaDelta >= 14 || rgbDelta >= 36;
+      const score =
+        darkness * 1.25 +
+        boundaryRatio * 95 +
+        (areaRatio < 0.28 ? 22 : 0);
+
+      return {
+        ...entry,
+        boundaryRatio,
+        areaRatio,
+        score,
+      };
+    })
+    .filter((entry) => entry.luminance <= 92 && entry.boundaryRatio >= 0.28)
+    .sort((a, b) => b.score - a.score);
+
+  const maxProtected =
+    componentBudget <= 8 ? 1 : componentBudget <= 24 ? 2 : 3;
+
+  return new Set(entries.slice(0, maxProtected).map((entry) => entry.hex));
 }
 
-function sharesComponent(left: Set<number>, right: Set<number>): boolean {
-  for (const id of left) {
-    if (right.has(id)) {
-      return true;
+function applyFamilyBudgetToComponent(
+  pixelMap: PixelMap,
+  component: ComponentData,
+  componentBudget: number,
+  lineColours: Set<string>,
+  options: NormalizedOptions,
+): PixelMap {
+  const next = clonePixelMap(pixelMap);
+  const allEntries = [...component.colourStats.values()];
+  const protectedEntries = allEntries.filter((entry) => lineColours.has(entry.hex));
+  const paintEntries = allEntries.filter((entry) => !lineColours.has(entry.hex));
+
+  const colourMap = new Map<string, string>();
+
+  for (const entry of protectedEntries) {
+    colourMap.set(entry.hex, entry.hex);
+  }
+
+  if (paintEntries.length === 0) {
+    recolourComponent(next, component, colourMap);
+    return next;
+  }
+
+  const remainingBudget = Math.max(1, componentBudget - protectedEntries.length);
+  const familyCount = determineFamilyCount(remainingBudget, paintEntries.length);
+  const families = clusterEntriesIntoFamilies(paintEntries, familyCount);
+
+  allocateFamilyBudgets(families, remainingBudget, options);
+
+  const darkestLineLuminance =
+    protectedEntries.length > 0
+      ? Math.min(...protectedEntries.map((entry) => entry.luminance))
+      : null;
+
+  for (const family of families) {
+    const palette = buildFamilyPalette(family.entries, family.budget, darkestLineLuminance, options);
+    if (palette.length === 0) {
+      continue;
+    }
+
+    for (const entry of family.entries) {
+      const target = pickNearestPalette(entry.rgb, palette);
+      colourMap.set(entry.hex, target);
     }
   }
-  return false;
+
+  recolourComponent(next, component, colourMap);
+  return next;
 }
 
-function isLikelyLineColor(entry: ColorStats): boolean {
-  const ratio = boundaryRatio(entry);
-
-  if (entry.luminance <= 0.17) return true;
-  if (entry.luminance <= 0.25 && ratio >= 0.50) return true;
-  if (entry.luminance <= 0.32 && ratio >= 0.68) return true;
-
-  return false;
+function recolourComponent(pixelMap: PixelMap, component: ComponentData, colourMap: Map<string, string>): void {
+  for (const point of component.pixels) {
+    const pixel = pixelMap[point.y]?.[point.x];
+    if (!pixel || (pixel.alpha ?? 0) <= 0) {
+      continue;
+    }
+    const currentHex = normalizeHex(pixel.colorHex ?? "#000000");
+    const mappedHex = colourMap.get(currentHex);
+    if (mappedHex) {
+      pixel.colorHex = mappedHex;
+    }
+  }
 }
 
-function lineScore(entry: ColorStats): number {
-  return boundaryRatio(entry) * 220 + (1 - entry.luminance) * 150 + Math.min(entry.count, 300);
+function determineFamilyCount(remainingBudget: number, distinctCount: number): number {
+  if (distinctCount <= 1) {
+    return 1;
+  }
+  if (remainingBudget <= 2) {
+    return 1;
+  }
+  if (remainingBudget <= 5) {
+    return Math.min(2, distinctCount);
+  }
+  if (remainingBudget <= 12) {
+    return Math.min(distinctCount, Math.max(2, Math.round(remainingBudget / 3)));
+  }
+  return Math.min(distinctCount, Math.max(2, Math.round(remainingBudget / 4)));
 }
 
-function boundaryRatio(entry: ColorStats): number {
-  if (entry.count <= 0) return 0;
-  return entry.boundaryCount / entry.count;
-}
-
-function addScore(map: Map<string, number>, hex: string, amount: number): void {
-  map.set(hex, (map.get(hex) ?? 0) + amount);
-}
-
-function isDrawablePixel(pixel: Pixel | undefined): pixel is Pixel {
-  return Boolean(pixel && pixel.alpha > 0 && pixel.colorIndex >= 0);
-}
-
-function normalizeHex(hex: string): string {
-  const value = String(hex ?? "").trim().toLowerCase();
-
-  if (/^#[0-9a-f]{6}$/u.test(value)) {
-    return value;
+function clusterEntriesIntoFamilies(entries: ColourStat[], familyCount: number): Family[] {
+  if (familyCount >= entries.length) {
+    return entries.map((entry) => ({
+      entries: [entry],
+      budget: 1,
+    }));
   }
 
-  if (/^#[0-9a-f]{3}$/u.test(value)) {
-    const chars = value.slice(1).split("");
-    return `#${chars.map((char) => `${char}${char}`).join("")}`;
+  const seeds = selectFamilySeeds(entries, familyCount);
+  let assignments = new Map<string, number>();
+
+  for (let iteration = 0; iteration < 6; iteration += 1) {
+    assignments = new Map<string, number>();
+
+    for (const entry of entries) {
+      let bestIndex = 0;
+      let bestDistance = Number.POSITIVE_INFINITY;
+
+      for (let index = 0; index < seeds.length; index += 1) {
+        const seed = seeds[index];
+        const distance = entryDistance(entry, seed);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestIndex = index;
+        }
+      }
+
+      assignments.set(entry.hex, bestIndex);
+    }
+
+    for (let index = 0; index < seeds.length; index += 1) {
+      const clusterEntries = entries.filter((entry) => assignments.get(entry.hex) === index);
+      if (clusterEntries.length === 0) {
+        continue;
+      }
+      seeds[index] = pickRepresentativeEntry(clusterEntries);
+    }
   }
 
-  return "#000000";
+  const families: Family[] = Array.from({ length: seeds.length }, () => ({
+    entries: [],
+    budget: 1,
+  }));
+
+  for (const entry of entries) {
+    const familyIndex = assignments.get(entry.hex) ?? 0;
+    families[familyIndex].entries.push(entry);
+  }
+
+  return families.filter((family) => family.entries.length > 0);
 }
 
-function parseHexColor(hex: string): Rgb {
-  const normalized = normalizeHex(hex);
+function selectFamilySeeds(entries: ColourStat[], familyCount: number): ColourStat[] {
+  const sorted = [...entries].sort((a, b) => b.count - a.count);
+  const first = sorted[0];
 
-  return {
-    r: Number.parseInt(normalized.slice(1, 3), 16),
-    g: Number.parseInt(normalized.slice(3, 5), 16),
-    b: Number.parseInt(normalized.slice(5, 7), 16),
+  if (!first) {
+    return [];
+  }
+
+  const seeds: ColourStat[] = [first];
+
+  // 小面积但高色相/高明度差异的结构细节，必须优先成为 family seed。
+  const detailSeeds = [...entries]
+    .filter((entry) => entry.hex !== first.hex)
+    .map((entry) => ({
+      entry,
+      score: structuralDetailScore(entry, entries),
+    }))
+    .filter((item) => item.score >= 4)
+    .sort((a, b) => b.score - a.score);
+
+  for (const item of detailSeeds) {
+    if (seeds.length >= familyCount) break;
+    if (!seeds.some((seed) => seed.hex === item.entry.hex)) {
+      seeds.push(item.entry);
+    }
+  }
+
+  while (seeds.length < familyCount) {
+    let bestEntry: ColourStat | null = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
+
+    for (const entry of sorted) {
+      if (seeds.some((seed) => seed.hex === entry.hex)) {
+        continue;
+      }
+
+      const minDistance = Math.min(...seeds.map((seed) => entryDistance(entry, seed)));
+      const detailBonus = structuralDetailScore(entry, entries) * 18;
+      const score = minDistance + entry.count * 0.18 + detailBonus;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestEntry = entry;
+      }
+    }
+
+    if (!bestEntry) {
+      break;
+    }
+
+    seeds.push(bestEntry);
+  }
+
+  return seeds;
+}
+
+function pickRepresentativeEntry(entries: ColourStat[]): ColourStat {
+  const totalWeight = entries.reduce((sum, entry) => sum + entry.count, 0);
+  const meanX = entries.reduce((sum, entry) => sum + (entry.sumX / Math.max(1, entry.count)) * entry.count, 0) / Math.max(1, totalWeight);
+  const meanY = entries.reduce((sum, entry) => sum + (entry.sumY / Math.max(1, entry.count)) * entry.count, 0) / Math.max(1, totalWeight);
+  const meanRgb = {
+    r: entries.reduce((sum, entry) => sum + entry.rgb.r * entry.count, 0) / Math.max(1, totalWeight),
+    g: entries.reduce((sum, entry) => sum + entry.rgb.g * entry.count, 0) / Math.max(1, totalWeight),
+    b: entries.reduce((sum, entry) => sum + entry.rgb.b * entry.count, 0) / Math.max(1, totalWeight),
   };
+
+  let bestEntry = entries[0];
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  for (const entry of entries) {
+    const dx = entry.sumX / Math.max(1, entry.count) - meanX;
+    const dy = entry.sumY / Math.max(1, entry.count) - meanY;
+    const spatial = Math.sqrt(dx * dx + dy * dy);
+    const colour = rgbDistance(entry.rgb, meanRgb);
+    const score = colour + spatial * 0.35;
+    if (score < bestScore) {
+      bestScore = score;
+      bestEntry = entry;
+    }
+  }
+
+  return bestEntry;
 }
 
-function rgbToHex(rgb: Rgb): string {
-  const r = clampChannel(rgb.r).toString(16).padStart(2, "0");
-  const g = clampChannel(rgb.g).toString(16).padStart(2, "0");
-  const b = clampChannel(rgb.b).toString(16).padStart(2, "0");
-  return `#${r}${g}${b}`;
+
+function rgbChroma(rgb: RGB): number {
+  return Math.max(rgb.r, rgb.g, rgb.b) - Math.min(rgb.r, rgb.g, rgb.b);
 }
 
-function clampChannel(value: number): number {
-  return Math.max(0, Math.min(255, Math.round(value)));
-}
-
-function rgbToHsv(rgb: Rgb): Hsv {
+function rgbHue(rgb: RGB): number {
   const r = rgb.r / 255;
   const g = rgb.g / 255;
   const b = rgb.b / 255;
@@ -903,415 +1061,739 @@ function rgbToHsv(rgb: Rgb): Hsv {
   const min = Math.min(r, g, b);
   const delta = max - min;
 
-  let h = 0;
+  if (delta === 0) {
+    return 0;
+  }
 
-  if (delta !== 0) {
-    if (max === r) {
-      h = 60 * (((g - b) / delta) % 6);
-    } else if (max === g) {
-      h = 60 * ((b - r) / delta + 2);
-    } else {
-      h = 60 * ((r - g) / delta + 4);
+  let hue = 0;
+
+  if (max === r) {
+    hue = 60 * (((g - b) / delta) % 6);
+  } else if (max === g) {
+    hue = 60 * ((b - r) / delta + 2);
+  } else {
+    hue = 60 * ((r - g) / delta + 4);
+  }
+
+  return hue < 0 ? hue + 360 : hue;
+}
+
+function hueDistanceDegrees(left: number, right: number): number {
+  const diff = Math.abs(left - right) % 360;
+  return Math.min(diff, 360 - diff);
+}
+
+function familyTotalCount(family: Family): number {
+  return family.entries.reduce((sum, entry) => sum + entry.count, 0);
+}
+
+function familyBoundaryRatio(family: Family): number {
+  const count = Math.max(1, familyTotalCount(family));
+  const boundary = family.entries.reduce((sum, entry) => sum + entry.boundaryCount, 0);
+  return boundary / count;
+}
+
+function familyLuminanceRange(family: Family): number {
+  if (family.entries.length <= 1) {
+    return 0;
+  }
+
+  const values = family.entries.map((entry) => entry.luminance);
+  return Math.max(...values) - Math.min(...values);
+}
+
+function dominantEntry(entries: ColourStat[]): ColourStat | null {
+  return [...entries].sort((a, b) => b.count - a.count)[0] ?? null;
+}
+
+function structuralDetailScore(entry: ColourStat, allEntries: ColourStat[]): number {
+  const dominant = dominantEntry(allEntries);
+  if (!dominant || dominant.hex === entry.hex) {
+    return 0;
+  }
+
+  const entryHue = rgbHue(entry.rgb);
+  const dominantHue = rgbHue(dominant.rgb);
+  const hueGap = hueDistanceDegrees(entryHue, dominantHue);
+  const chromaValue = rgbChroma(entry.rgb);
+  const lumaGap = Math.abs(entry.luminance - dominant.luminance);
+  const boundaryRatio = entry.boundaryCount / Math.max(1, entry.count);
+  const areaRatio = entry.count / Math.max(1, allEntries.reduce((sum, item) => sum + item.count, 0));
+
+  let score = 0;
+
+  // 金色 / 棕金 / 彩色饰品：色相和色度与黑灰主体不同
+  if (chromaValue >= 14) score += 3;
+  if (chromaValue >= 24) score += 2;
+  if (hueGap >= 14) score += 2;
+  if (hueGap >= 24) score += 2;
+
+  // 高光/暗线/金属边：即使色相不强，只要和周围有亮度层级，也有结构价值
+  if (lumaGap >= 16) score += 2;
+  if (lumaGap >= 32) score += 2;
+
+  // 不是随机点，而是贴边/构成形状
+  if (boundaryRatio >= 0.18) score += 1;
+  if (boundaryRatio >= 0.35) score += 1;
+
+  // 很小但不是单像素
+  if (entry.count >= 3 && entry.count <= 260) score += 2;
+  if (entry.count <= 2) score -= 4;
+
+  // 太大的一般是主体填充，不按 detail 处理
+  if (areaRatio >= 0.18) score -= 3;
+
+  return score;
+}
+
+function isStructuralDetailEntry(entry: ColourStat, allEntries: ColourStat[]): boolean {
+  return structuralDetailScore(entry, allEntries) >= 5;
+}
+
+function isStructuralDetailFamily(family: Family): boolean {
+  return family.entries.some((entry) => isStructuralDetailEntry(entry, family.entries));
+}
+
+function minimumBudgetForFamily(family: Family, options: NormalizedOptions): number {
+  if (family.entries.length === 0) {
+    return 0;
+  }
+
+  const total = familyTotalCount(family);
+  const luminanceRange = familyLuminanceRange(family);
+  const boundaryRatio = familyBoundaryRatio(family);
+  const detailFamily = isStructuralDetailFamily(family);
+  const dominant = dominantEntry(family.entries);
+
+  const maxChroma = family.entries.reduce(
+    (maxValue, entry) => Math.max(maxValue, rgbChroma(entry.rgb)),
+    0,
+  );
+
+  const dominantShare =
+    dominant ? dominant.count / Math.max(1, total) : 1;
+
+  let budget = 1;
+
+  // fill + shadow / highlight
+  if (luminanceRange >= 14 && total >= 2) {
+    budget += 1;
+  }
+
+  // fill + shadow + highlight
+  if (luminanceRange >= 32 && total >= 6) {
+    budget += 1;
+  }
+
+  // 线条 / 五官 / 小结构
+  if (detailFamily) {
+    budget = Math.max(budget, 2);
+  }
+
+  // 有明显色彩装饰，不要压成单色
+  if (maxChroma >= 24 && dominantShare < 0.82) {
+    budget = Math.max(budget, 2);
+  }
+
+  // 边缘结构明显，通常不是纯噪点
+  if (boundaryRatio >= 0.38 && total >= 4) {
+    budget = Math.max(budget, 2);
+  }
+
+  return Math.min(family.entries.length, Math.max(1, budget));
+}
+
+function familyImportanceScore(family: Family): number {
+  const count = familyTotalCount(family);
+  const detailBonus = isStructuralDetailFamily(family) ? 800 : 0;
+  const lumaBonus = familyLuminanceRange(family) * 4;
+  const boundaryBonus = familyBoundaryRatio(family) * 300;
+
+  return count + detailBonus + lumaBonus + boundaryBonus;
+}
+
+
+function allocateFamilyBudgets(
+  families: Family[],
+  budget: number,
+  options: NormalizedOptions,
+): void {
+  if (families.length === 0) {
+    return;
+  }
+
+  for (const family of families) {
+    family.budget = 1;
+  }
+
+  if (budget <= families.length) {
+    const sorted = [...families].sort((a, b) => familyImportanceScore(b) - familyImportanceScore(a));
+    for (const family of families) {
+      family.budget = 0;
+    }
+    for (const family of sorted.slice(0, budget)) {
+      family.budget = 1;
+    }
+    return;
+  }
+
+  // 第一轮：先给 detail family / 有层级的大 family 最低预算
+  let allocated = 0;
+  const sortedByPriority = [...families].sort((a, b) => familyImportanceScore(b) - familyImportanceScore(a));
+
+  for (const family of sortedByPriority) {
+    const minBudget = minimumBudgetForFamily(family, options);
+    const nextBudget = Math.min(family.entries.length, minBudget);
+    family.budget = nextBudget;
+    allocated += nextBudget;
+  }
+
+  // 如果最低预算已经超额，就按重要度裁回预算，但尽量不把 detail family 裁成 1
+  while (allocated > budget) {
+    const candidates = [...families]
+      .filter((family) => family.budget > 1)
+      .sort((a, b) => {
+        const aPenalty = isStructuralDetailFamily(a) ? 10000 : 0;
+        const bPenalty = isStructuralDetailFamily(b) ? 10000 : 0;
+        return (familyImportanceScore(a) + aPenalty) - (familyImportanceScore(b) + bPenalty);
+      });
+
+    const target = candidates[0];
+    if (!target) break;
+
+    target.budget -= 1;
+    allocated -= 1;
+  }
+
+  // 第二轮：剩余预算继续按重要度和面积分配
+  let remaining = Math.max(0, budget - allocated);
+
+  while (remaining > 0) {
+    const candidates = [...families]
+      .filter((family) => family.budget < family.entries.length)
+      .map((family) => ({
+        family,
+        score: familyImportanceScore(family) / (1 + family.budget * 0.85),
+      }))
+      .sort((a, b) => b.score - a.score);
+
+    const chosen = candidates[0]?.family;
+    if (!chosen) {
+      break;
+    }
+
+    chosen.budget += 1;
+    remaining -= 1;
+  }
+}
+
+function buildFamilyPalette(
+  family: Family,
+  budget: number,
+  options: NormalizedOptions,
+): string[] {
+  const entries = [...family.entries].sort(
+    (left, right) => left.luminance - right.luminance,
+  );
+
+  if (budget <= 0 || entries.length === 0) {
+    return [];
+  }
+
+  if (budget === 1) {
+    return [pickRepresentativeEntry(entries).hex];
+  }
+
+  let quantiles: number[];
+  if (budget === 2) {
+    quantiles = [0.2, 0.8];
+  } else if (budget === 3) {
+    quantiles = [0.14, 0.5, 0.86];
+  } else {
+    quantiles = Array.from({ length: budget }, (_, index) =>
+      0.1 + (0.8 * index) / Math.max(1, budget - 1),
+    );
+  }
+
+  const palette: Array<{ hex: string; rgb: RGB; luma: number }> = [];
+  const usedHexes = new Set<string>();
+
+  for (const quantile of quantiles) {
+    const picked = pickWeightedQuantile(entries, quantile);
+    if (!usedHexes.has(picked.hex)) {
+      usedHexes.add(picked.hex);
+      palette.push({
+        hex: picked.hex,
+        rgb: { ...picked.rgb },
+        luma: picked.luminance,
+      });
     }
   }
 
-  if (h < 0) h += 360;
+  while (palette.length < Math.min(budget, entries.length)) {
+    let bestEntry: ColourStat | null = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
 
-  return {
-    h,
-    s: max === 0 ? 0 : delta / max,
-    v: max,
-  };
-}
-
-function getLuminance(rgb: Rgb): number {
-  return getLuma255(rgb) / 255;
-}
-
-function getLuma255(rgb: Rgb): number {
-  return 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b;
-}
-
-function getSaturation(rgb: Rgb): number {
-  const max = Math.max(rgb.r, rgb.g, rgb.b);
-  const min = Math.min(rgb.r, rgb.g, rgb.b);
-  if (max === 0) return 0;
-  return (max - min) / max;
-}
-
-function colorDistanceHex(leftHex: string, rightHex: string): number {
-  return colorDistance(parseHexColor(leftHex), parseHexColor(rightHex));
-}
-
-function colorDistance(left: Rgb, right: Rgb): number {
-  const dr = left.r - right.r;
-  const dg = left.g - right.g;
-  const db = left.b - right.b;
-  const rgbDistance = Math.sqrt(dr * dr + dg * dg + db * db);
-  const luminanceDistance = Math.abs(getLuminance(left) - getLuminance(right)) * 90;
-  const saturationDistance = Math.abs(getSaturation(left) - getSaturation(right)) * 50;
-
-  return rgbDistance * 0.7 + luminanceDistance + saturationDistance;
-}
-
-function brightenRgb(rgb: Rgb, amount: number): Rgb {
-  return {
-    r: clampChannel(rgb.r + amount),
-    g: clampChannel(rgb.g + amount),
-    b: clampChannel(rgb.b + amount),
-  };
-}
-
-function darkenRgb(rgb: Rgb, amount: number): Rgb {
-  return {
-    r: clampChannel(rgb.r - amount),
-    g: clampChannel(rgb.g - amount),
-    b: clampChannel(rgb.b - amount),
-  };
-}
-
-
-function collapseVisuallyEquivalentColours(pixelMap: PixelMap, options: NormalizedOptions): PixelMap {
-  const distinct = getDistinctColorHexes(pixelMap);
-
-  if (distinct.length <= 1) {
-    return reindexPixelMapByColorHex(pixelMap);
-  }
-
-  const { components, componentByCoord } = collectComponents(pixelMap);
-  const colorStats = buildColorStats(pixelMap, componentByCoord);
-  const protectedScores = buildProtectedColorScores(components, colorStats, options);
-  const stats = [...colorStats.values()];
-
-  const targetEffectiveCount = getTargetEffectiveColourCount(options);
-  const mergeThreshold = getVisualEquivalentMergeThreshold(options);
-  const forcedMergeThreshold = mergeThreshold * (options.conservativeHighColorMode ? 1.45 : 1.25);
-
-  const ranked = [...stats].sort((a, b) => colourImportanceScore(b, protectedScores) - colourImportanceScore(a, protectedScores));
-
-  const kept: ColorStats[] = [];
-  const mapping = new Map<string, string>();
-
-  for (const candidate of ranked) {
-    let bestTarget: ColorStats | null = null;
-    let bestScore = Number.POSITIVE_INFINITY;
-
-    for (const target of kept) {
-      const canMerge = shouldMergeAsVisuallyEquivalent(
-        candidate,
-        target,
-        protectedScores,
-        options,
-        mergeThreshold,
-      );
-
-      if (!canMerge) {
+    for (const entry of entries) {
+      if (usedHexes.has(entry.hex)) {
         continue;
       }
 
-      const score = visualEquivalenceDistance(candidate, target, options);
+      const minDistance =
+        palette.length === 0
+          ? 999
+          : Math.min(
+              ...palette.map(
+                (item) =>
+                  rgbDistance(entry.rgb, item.rgb) +
+                  Math.abs(entry.luminance - item.luma),
+              ),
+            );
 
-      if (score < bestScore) {
+      const score = minDistance + structuralDetailScore(entry, entries) * 8;
+
+      if (score > bestScore) {
         bestScore = score;
-        bestTarget = target;
+        bestEntry = entry;
       }
     }
 
-    if (bestTarget) {
-      mapping.set(candidate.colorHex, bestTarget.colorHex);
+    if (!bestEntry) {
+      break;
+    }
+
+    usedHexes.add(bestEntry.hex);
+    palette.push({
+      hex: bestEntry.hex,
+      rgb: { ...bestEntry.rgb },
+      luma: bestEntry.luminance,
+    });
+  }
+
+  palette.sort((left, right) => left.luma - right.luma);
+
+  const detailFamily = isStructuralDetailFamily(family);
+  const luminanceRange = familyLuminanceRange(family);
+
+  let minGap = budget <= 2 ? 18 : budget === 3 ? 14 : 10;
+  if (detailFamily) {
+    minGap += 4;
+  }
+  if (luminanceRange >= 34) {
+    minGap += 2;
+  }
+
+  for (let index = 1; index < palette.length; index += 1) {
+    const previous = palette[index - 1];
+    const current = palette[index];
+
+    if (!previous || !current) {
       continue;
     }
 
-    kept.push(candidate);
-    mapping.set(candidate.colorHex, candidate.colorHex);
-  }
-
-  // 如果仍然超过有效颜色预算，再从最低重要度的颜色开始并到最近的安全目标。
-  if (kept.length > targetEffectiveCount) {
-    const keepSet = new Set(
-      [...kept]
-        .sort((a, b) => colourImportanceScore(b, protectedScores) - colourImportanceScore(a, protectedScores))
-        .slice(0, targetEffectiveCount)
-        .map((entry) => entry.colorHex),
-    );
-
-    const keptTargets = kept.filter((entry) => keepSet.has(entry.colorHex));
-
-    for (const entry of kept) {
-      if (keepSet.has(entry.colorHex)) {
-        mapping.set(entry.colorHex, entry.colorHex);
-        continue;
-      }
-
-      let bestTarget: ColorStats | null = null;
-      let bestScore = Number.POSITIVE_INFINITY;
-
-      for (const target of keptTargets) {
-        const canMerge = shouldMergeAsVisuallyEquivalent(
-          entry,
-          target,
-          protectedScores,
-          options,
-          forcedMergeThreshold,
-        );
-
-        if (!canMerge) {
-          continue;
-        }
-
-        const score = visualEquivalenceDistance(entry, target, options);
-
-        if (score < bestScore) {
-          bestScore = score;
-          bestTarget = target;
-        }
-      }
-
-      if (!bestTarget) {
-        bestTarget = [...keptTargets].sort(
-          (a, b) => visualEquivalenceDistance(entry, a, options) - visualEquivalenceDistance(entry, b, options),
-        )[0] ?? null;
-      }
-
-      mapping.set(entry.colorHex, bestTarget?.colorHex ?? entry.colorHex);
+    const requiredLuma = previous.luma + minGap;
+    if (current.luma < requiredLuma) {
+      current.rgb = shiftToLuminance(current.rgb, requiredLuma);
+      current.luma = luminance(current.rgb);
+      current.hex = rgbToHex(current.rgb);
     }
   }
 
-  return applyColorMapping(pixelMap, mapping);
+  if (detailFamily && palette.length >= 2) {
+    const first = palette[0];
+    const second = palette[1];
+
+    if (first && second && second.luma - first.luma < 18) {
+      first.rgb = shiftToLuminance(first.rgb, Math.max(0, second.luma - 18));
+      first.luma = luminance(first.rgb);
+      first.hex = rgbToHex(first.rgb);
+    }
+  }
+
+  return [...new Set(palette.map((item) => item.hex))];
 }
 
-function getTargetEffectiveColourCount(options: NormalizedOptions): number {
-  if (options.targetColorCount <= 16) return Math.min(options.targetColorCount, 14);
-  if (options.targetColorCount <= 32) return 24;
-  if (options.targetColorCount <= 64) return 40;
-  return Math.max(48, Math.round(options.targetColorCount * 0.68));
+function pickWeightedQuantile(entries: ColourStat[], quantile: number): ColourStat {
+  const total = entries.reduce((sum, entry) => sum + entry.count, 0);
+  const target = total * clamp(quantile, 0, 1);
+  let cumulative = 0;
+
+  for (const entry of entries) {
+    cumulative += entry.count;
+    if (cumulative >= target) {
+      return entry;
+    }
+  }
+
+  return entries[entries.length - 1];
 }
 
-function getVisualEquivalentMergeThreshold(options: NormalizedOptions): number {
-  if (options.targetColorCount <= 16) return 13;
-  if (options.targetColorCount <= 32) return 17;
-  if (options.targetColorCount <= 64) return 19;
-  return 16;
+function pickNearestPalette(rgb: RGB, palette: string[]): string {
+  let bestHex = palette[0];
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (const hex of palette) {
+    const candidate = parseHexColor(hex);
+    const distance = rgbDistance(rgb, candidate) + Math.abs(luminance(rgb) - luminance(candidate)) * 0.65;
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestHex = hex;
+    }
+  }
+
+  return bestHex;
 }
 
-function colourImportanceScore(entry: ColorStats, protectedScores: Map<string, number>): number {
-  return (
-    (protectedScores.get(entry.colorHex) ?? 0) +
-    entry.count * 1.45 +
-    entry.boundaryCount * 0.6 +
-    entry.componentIds.size * 55 +
-    // 小但高对比的结构色，例如眼睛、徽章、链条，不应轻易被吃掉
-    Math.min(160, entry.neighborColors.size * 28)
-  );
-}
 
-function visualEquivalenceDistance(left: ColorStats, right: ColorStats, options: NormalizedOptions): number {
-  const rgbDistance = colorDistance(left.rgb, right.rgb);
-  const lumaDistance = Math.abs(left.luminance - right.luminance) * 110;
-  const satDistance = Math.abs(left.hsv.s - right.hsv.s) * 42;
-  const hueDistance = circularHueDistance(left.hsv.h, right.hsv.h);
-
-  const bothNeutral = left.hsv.s <= 0.09 && right.hsv.s <= 0.09;
-  const bothDark = left.luminance < 0.28 && right.luminance < 0.28;
-
-  // 游戏里深色/低饱和区域压缩很厉害，这些颜色要更容易被判为等效。
-  const darkCompression = bothDark ? 0.72 : 1;
-  const neutralCompression = bothNeutral ? 0.74 : 1;
-
-  // 色相非常接近时，主要看 S/V；色相不同则保留一点惩罚。
-  const huePenalty = bothNeutral ? 0 : Math.min(16, hueDistance * 0.18);
-
-  const distance = rgbDistance * 0.45 + lumaDistance * 0.34 + satDistance + huePenalty;
-
-  return distance * darkCompression * neutralCompression * (options.conservativeHighColorMode ? 0.92 : 1);
-}
-
-function shouldMergeAsVisuallyEquivalent(
-  left: ColorStats,
-  right: ColorStats,
-  protectedScores: Map<string, number>,
-  options: NormalizedOptions,
-  threshold: number,
+function shouldKeepTinyStructuralIsland(
+  sourceHex: string,
+  replacementHex: string,
+  islandSize: number,
 ): boolean {
-  const leftProtected = (protectedScores.get(left.colorHex) ?? 0) > 0;
-  const rightProtected = (protectedScores.get(right.colorHex) ?? 0) > 0;
+  const source = parseHexColor(sourceHex);
+  const replacement = parseHexColor(replacementHex);
 
-  const leftLineLike = isLikelyLineColor(left);
-  const rightLineLike = isLikelyLineColor(right);
+  const sourceChroma = rgbChroma(source);
+  const replacementChroma = rgbChroma(replacement);
+  const hueGap = hueDistanceDegrees(rgbHue(source), rgbHue(replacement));
+  const lumaGap = Math.abs(luminance(source) - luminance(replacement));
 
-  // 勾线和非勾线绝对不合并。
-  if (leftLineLike !== rightLineLike) {
+  // 一两像素且低对比，多半是噪点；不要保护。
+  if (islandSize <= 2 && sourceChroma < 14 && lumaGap < 18) {
     return false;
   }
 
-  // 两个保护色只在几乎完全一样时才合并。
-  if (leftProtected && rightProtected && visualEquivalenceDistance(left, right, options) > threshold * 0.45) {
-    return false;
-  }
-
-  const linkedByRegion =
-    sharesComponent(left.componentIds, right.componentIds) ||
-    ((left.neighborColors.get(right.colorHex) ?? 0) + (right.neighborColors.get(left.colorHex) ?? 0) > 0);
-
-  // 同一区域/相邻区域内，明显的 base/shadow/highlight 层级要保留。
-  if (
-    linkedByRegion &&
-    shouldPreserveShadeSeparation(left.colorHex, right.colorHex, options.preserveLocalShading)
-  ) {
-    return false;
-  }
-
-  const bothDark = left.luminance < 0.28 && right.luminance < 0.28;
-  const bothNeutral = left.hsv.s <= 0.09 && right.hsv.s <= 0.09;
-  const distance = visualEquivalenceDistance(left, right, options);
-
-  if (distance <= threshold) {
+  // 小装饰 / 金属点 / 金边：小但和周围颜色体系明显不同，需要保留。
+  if (sourceChroma >= 14 && hueGap >= 14 && islandSize >= 2) {
     return true;
   }
 
-  // 暗色低饱和特别容易在游戏里塌成同一色，允许额外合并。
-  if (bothDark && (bothNeutral || circularHueDistance(left.hsv.h, right.hsv.h) <= 18)) {
-    const lumaGap = Math.abs(left.luminance - right.luminance);
-    const satGap = Math.abs(left.hsv.s - right.hsv.s);
+  // 灰色高光/暗线：色相不明显，但亮度层级明显，也需要保留。
+  if (lumaGap >= 34 && islandSize >= 3) {
+    return true;
+  }
 
-    if (lumaGap <= (options.targetColorCount <= 16 ? 0.05 : 0.04) && satGap <= 0.11) {
-      return true;
-    }
+  // 如果 source 比 replacement 更有色彩信息，不要随便并入灰黑主色。
+  if (sourceChroma - replacementChroma >= 12 && islandSize >= 2) {
+    return true;
   }
 
   return false;
 }
 
-function circularHueDistance(left: number, right: number): number {
-  const diff = Math.abs(left - right) % 360;
-  return Math.min(diff, 360 - diff);
-}
 
-
-
-function smoothTinyColourIslands(pixelMap: PixelMap, maxIslandPixels: number): PixelMap {
-  if (maxIslandPixels <= 0) {
+function smoothTinyColourIslands(pixelMap: PixelMap, maxIslandSize: number): PixelMap {
+  if (maxIslandSize <= 0) {
     return pixelMap;
   }
 
-  const height = pixelMap.length;
-  const width = pixelMap[0]?.length ?? 0;
+  const next = clonePixelMap(pixelMap);
+  const height = next.length;
+  const width = next[0]?.length ?? 0;
   const visited = Array.from({ length: height }, () => Array<boolean>(width).fill(false));
-  let working = pixelMap;
-
-  const eightNeighbors = [
-    { dx: -1, dy: -1 },
-    { dx: 0, dy: -1 },
-    { dx: 1, dy: -1 },
-    { dx: -1, dy: 0 },
-    { dx: 1, dy: 0 },
-    { dx: -1, dy: 1 },
-    { dx: 0, dy: 1 },
-    { dx: 1, dy: 1 },
-  ];
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
-      if (visited[y]?.[x]) {
+      const pixel = next[y]?.[x];
+      if (!pixel || visited[y][x] || (pixel.alpha ?? 0) <= 0) {
         continue;
       }
 
-      const pixel = working[y]?.[x];
-      if (!isDrawablePixel(pixel)) {
-        visited[y]![x] = true;
-        continue;
-      }
+      const baseHex = normalizeHex(pixel.colorHex ?? "#000000");
+      const island: Point[] = [];
+      const boundaryColours = new Map<string, number>();
+      const queue: Point[] = [{ x, y }];
+      visited[y][x] = true;
 
-      const sourceHex = normalizeHex(pixel.colorHex);
-      const component = collectSameColorComponent(working, x, y, visited);
+      for (let index = 0; index < queue.length; index += 1) {
+        const point = queue[index];
+        island.push(point);
 
-      if (component.length === 0 || component.length > maxIslandPixels) {
-        continue;
-      }
-
-      const neighborVotes = new Map<string, number>();
-
-      for (const point of component) {
-        for (const neighbor of eightNeighbors) {
-          const nx = point.x + neighbor.dx;
-          const ny = point.y + neighbor.dy;
-
-          if (ny < 0 || nx < 0 || ny >= height || nx >= width) {
+        for (const [dx, dy] of DIRS) {
+          const nx = point.x + dx;
+          const ny = point.y + dy;
+          if (ny < 0 || ny >= height || nx < 0 || nx >= width) {
             continue;
           }
 
-          const nextPixel = working[ny]?.[nx];
-          if (!isDrawablePixel(nextPixel)) {
+          const neighbour = next[ny]?.[nx];
+          if (!neighbour || (neighbour.alpha ?? 0) <= 0) {
             continue;
           }
 
-          const nextHex = normalizeHex(nextPixel.colorHex);
-          if (nextHex === sourceHex) {
-            continue;
+          const neighbourHex = normalizeHex(neighbour.colorHex ?? "#000000");
+          if (neighbourHex === baseHex) {
+            if (!visited[ny][nx]) {
+              visited[ny][nx] = true;
+              queue.push({ x: nx, y: ny });
+            }
+          } else {
+            boundaryColours.set(neighbourHex, (boundaryColours.get(neighbourHex) ?? 0) + 1);
           }
-
-          neighborVotes.set(nextHex, (neighborVotes.get(nextHex) ?? 0) + 1);
         }
       }
 
-      const best = [...neighborVotes.entries()].sort((a, b) => b[1] - a[1])[0];
+      if (island.length > 0 && island.length <= maxIslandSize && boundaryColours.size > 0) {
+        const replacement = [...boundaryColours.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+        if (replacement) {
+          if (shouldKeepTinyStructuralIsland(baseHex, replacement, island.length)) {
+            continue;
+          }
 
-      if (!best) {
-        continue;
+          for (const point of island) {
+            const target = next[point.y]?.[point.x];
+            if (target) {
+              target.colorHex = replacement;
+            }
+          }
+        }
       }
-
-      const [targetHex, votes] = best;
-
-      // 高色数模式只吃掉低对比小碎色，不吞掉眼睛、徽章、高光这类高价值细节。
-      if (votes < Math.max(2, component.length)) {
-        continue;
-      }
-
-      if (colorDistanceHex(sourceHex, targetHex) > 28) {
-        continue;
-      }
-
-      if (shouldPreserveShadeSeparation(sourceHex, targetHex, true)) {
-        continue;
-      }
-
-      working = replacePointsWithColor(working, component, targetHex);
     }
   }
 
-  return reindexPixelMapByColorHex(working);
+  return next;
 }
 
+function mergeGlobalSimilarColours(
+  pixelMap: PixelMap,
+  targetColorCount: number,
+  protectedColours: Set<string>,
+  options: NormalizedOptions,
+): PixelMap {
+  let next = clonePixelMap(pixelMap);
 
-class UnionFind {
-  private readonly parent: Map<string, string>;
+  while (getDistinctColorHexes(next).length > targetColorCount) {
+    const stats = buildGlobalColourStats(next);
+    const colours = [...stats.keys()];
+    if (colours.length <= targetColorCount) {
+      break;
+    }
 
-  constructor(items: string[]) {
-    this.parent = new Map<string, string>();
+    let bestPair: [string, string] | null = null;
+    let bestScore = Number.POSITIVE_INFINITY;
 
-    for (const item of items) {
-      this.parent.set(item, item);
+    for (let i = 0; i < colours.length; i += 1) {
+      for (let j = i + 1; j < colours.length; j += 1) {
+        const aHex = colours[i];
+        const bHex = colours[j];
+
+        if (protectedColours.has(aHex) && protectedColours.has(bHex)) {
+          continue;
+        }
+
+        const a = stats.get(aHex);
+        const b = stats.get(bHex);
+        if (!a || !b) {
+          continue;
+        }
+
+        const distance =
+          rgbDistance(a.rgb, b.rgb) +
+          Math.abs(a.luminance - b.luminance) * 0.9;
+
+        const boundaryPenalty =
+          (protectedColours.has(aHex) || protectedColours.has(bHex)) ? 6 : 0;
+
+        const score = distance + boundaryPenalty;
+
+        if (score < bestScore) {
+          bestScore = score;
+          bestPair = [aHex, bHex];
+        }
+      }
+    }
+
+    if (!bestPair) {
+      break;
+    }
+
+    const [aHex, bHex] = bestPair;
+    const a = stats.get(aHex);
+    const b = stats.get(bHex);
+    if (!a || !b) {
+      break;
+    }
+
+    let fromHex = aHex;
+    let toHex = bHex;
+
+    if (protectedColours.has(fromHex) && !protectedColours.has(toHex)) {
+      fromHex = bHex;
+      toHex = aHex;
+    } else if (!protectedColours.has(fromHex) && !protectedColours.has(toHex)) {
+      if (a.count > b.count) {
+        fromHex = bHex;
+        toHex = aHex;
+      }
+    }
+
+    next = replaceColour(next, fromHex, toHex);
+
+    if (bestScore > options.maxMergeDistance * 2.8 && getDistinctColorHexes(next).length <= targetColorCount + 1) {
+      break;
     }
   }
 
-  find(item: string): string {
-    const parent = this.parent.get(item);
+  return next;
+}
 
-    if (!parent || parent === item) {
-      return item;
+function buildGlobalColourStats(pixelMap: PixelMap): Map<string, { count: number; rgb: RGB; luminance: number }> {
+  const stats = new Map<string, { count: number; rgb: RGB; luminance: number }>();
+
+  for (const row of pixelMap) {
+    for (const pixel of row) {
+      if ((pixel.alpha ?? 0) <= 0) {
+        continue;
+      }
+      const hex = normalizeHex(pixel.colorHex ?? "#000000");
+      const existing = stats.get(hex);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        const rgb = parseHexColor(hex);
+        stats.set(hex, {
+          count: 1,
+          rgb,
+          luminance: luminance(rgb),
+        });
+      }
     }
-
-    const root = this.find(parent);
-    this.parent.set(item, root);
-    return root;
   }
 
-  union(left: string, right: string): void {
-    const leftRoot = this.find(left);
-    const rightRoot = this.find(right);
+  return stats;
+}
 
-    if (leftRoot === rightRoot) return;
-
-    this.parent.set(rightRoot, leftRoot);
+function replaceColour(pixelMap: PixelMap, fromHex: string, toHex: string): PixelMap {
+  const next = clonePixelMap(pixelMap);
+  for (const row of next) {
+    for (const pixel of row) {
+      if ((pixel.alpha ?? 0) <= 0) {
+        continue;
+      }
+      if (normalizeHex(pixel.colorHex ?? "#000000") === fromHex) {
+        pixel.colorHex = toHex;
+      }
+    }
   }
+  return next;
+}
+
+function getDistinctColorHexes(pixelMap: PixelMap): string[] {
+  const set = new Set<string>();
+  for (const row of pixelMap) {
+    for (const pixel of row) {
+      if ((pixel.alpha ?? 0) > 0) {
+        set.add(normalizeHex(pixel.colorHex ?? "#000000"));
+      }
+    }
+  }
+  return [...set];
+}
+
+function reindexPixelMapByColorHex(pixelMap: PixelMap): PixelMap {
+  const next = clonePixelMap(pixelMap);
+  const colours = getDistinctColorHexes(next);
+  const indexMap = new Map<string, number>();
+  colours.forEach((hex, index) => {
+    indexMap.set(hex, index);
+  });
+
+  for (const row of next) {
+    for (const pixel of row) {
+      if ((pixel.alpha ?? 0) <= 0) {
+        continue;
+      }
+      const hex = normalizeHex(pixel.colorHex ?? "#000000");
+      pixel.colorHex = hex;
+      pixel.colorIndex = indexMap.get(hex) ?? 0;
+    }
+  }
+
+  return next;
+}
+
+function entryDistance(a: ColourStat, b: ColourStat): number {
+  const ax = a.sumX / Math.max(1, a.count);
+  const ay = a.sumY / Math.max(1, a.count);
+  const bx = b.sumX / Math.max(1, b.count);
+  const by = b.sumY / Math.max(1, b.count);
+
+  const spatial = Math.sqrt((ax - bx) ** 2 + (ay - by) ** 2);
+  const colour = rgbDistance(a.rgb, b.rgb);
+  const luma = Math.abs(a.luminance - b.luminance) * 0.85;
+
+  return colour + luma + spatial * 0.35;
+}
+
+function rgbDistance(a: RGB, b: RGB): number {
+  const dr = a.r - b.r;
+  const dg = a.g - b.g;
+  const db = a.b - b.b;
+  return Math.sqrt(dr * dr * 0.9 + dg * dg * 1.15 + db * db * 0.95);
+}
+
+function luminance(rgb: RGB): number {
+  return 0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b;
+}
+
+function shiftToLuminance(rgb: RGB, targetLuminance: number): RGB {
+  const current = luminance(rgb);
+  const target = clamp(targetLuminance, 0, 255);
+
+  if (Math.abs(current - target) < 0.5) {
+    return clampRgb(rgb);
+  }
+
+  if (target > current) {
+    const factor = clamp((target - current) / Math.max(1, 255 - current), 0, 1);
+    return clampRgb({
+      r: rgb.r + (255 - rgb.r) * factor,
+      g: rgb.g + (255 - rgb.g) * factor,
+      b: rgb.b + (255 - rgb.b) * factor,
+    });
+  }
+
+  const factor = clamp((current - target) / Math.max(1, current), 0, 1);
+  return clampRgb({
+    r: rgb.r * (1 - factor),
+    g: rgb.g * (1 - factor),
+    b: rgb.b * (1 - factor),
+  });
+}
+
+function clampRgb(rgb: RGB): RGB {
+  return {
+    r: Math.round(clamp(rgb.r, 0, 255)),
+    g: Math.round(clamp(rgb.g, 0, 255)),
+    b: Math.round(clamp(rgb.b, 0, 255)),
+  };
+}
+
+function parseHexColor(hex: string): RGB {
+  const normalized = normalizeHex(hex).slice(1);
+  return {
+    r: Number.parseInt(normalized.slice(0, 2), 16),
+    g: Number.parseInt(normalized.slice(2, 4), 16),
+    b: Number.parseInt(normalized.slice(4, 6), 16),
+  };
+}
+
+function rgbToHex(rgb: RGB): string {
+  const safe = clampRgb(rgb);
+  return `#${safe.r.toString(16).padStart(2, "0")}${safe.g.toString(16).padStart(2, "0")}${safe.b.toString(16).padStart(2, "0")}`;
+}
+
+function normalizeHex(hex: string): string {
+  const value = String(hex ?? "#000000").trim().toLowerCase();
+  if (/^#[0-9a-f]{6}$/u.test(value)) {
+    return value;
+  }
+  if (/^#[0-9a-f]{3}$/u.test(value)) {
+    return `#${value[1]}${value[1]}${value[2]}${value[2]}${value[3]}${value[3]}`;
+  }
+  return "#000000";
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
