@@ -85,6 +85,166 @@ function colourDistanceScore(aHex: string, bHex: string): number {
   );
 }
 
+
+function gamePaletteDistance(aHex: string, bHex: string): number {
+  const a = parseHexColor(aHex);
+  const b = parseHexColor(bHex);
+
+  const lumaGap = Math.abs(luminance(a) - luminance(b));
+  const chromaGap = Math.abs(rgbChroma(a) - rgbChroma(b));
+  const hueGap = hueDistanceDegrees(rgbHue(a), rgbHue(b));
+
+  return rgbDistance(a, b) * 0.55 + lumaGap * 0.95 + chromaGap * 0.25 + hueGap * 0.08;
+}
+
+function collapseNearPaletteCentres(
+  centres: Array<{ hex: string; rgb: RGB; luma: number }>,
+  minDistance: number,
+): Array<{ hex: string; rgb: RGB; luma: number }> {
+  const ordered = [...centres].sort((left, right) => left.luma - right.luma);
+  const next: Array<{ hex: string; rgb: RGB; luma: number }> = [];
+
+  for (const centre of ordered) {
+    const existingIndex = next.findIndex(
+      (item) => gamePaletteDistance(item.hex, centre.hex) < minDistance,
+    );
+
+    if (existingIndex === -1) {
+      next.push({
+        hex: normalizeHex(centre.hex),
+        rgb: clampRgb(centre.rgb),
+        luma: centre.luma,
+      });
+      continue;
+    }
+
+    const existing = next[existingIndex]!;
+    const existingChroma = rgbChroma(existing.rgb);
+    const currentChroma = rgbChroma(centre.rgb);
+
+    if (
+      currentChroma > existingChroma ||
+      Math.abs(centre.luma - 128) > Math.abs(existing.luma - 128)
+    ) {
+      next[existingIndex] = {
+        hex: normalizeHex(centre.hex),
+        rgb: clampRgb(centre.rgb),
+        luma: centre.luma,
+      };
+    }
+  }
+
+  return next;
+}
+
+function spreadPaletteCentresForGame(
+  initialCentres: Array<{ hex: string; rgb: RGB; luma: number }>,
+  fallbackEntries: ColourStat[],
+  budget: number,
+): Array<{ hex: string; rgb: RGB; luma: number }> {
+  if (initialCentres.length === 0 || budget <= 0) {
+    return [];
+  }
+
+  const targetCount = Math.max(1, budget);
+  let centres = collapseNearPaletteCentres(
+    initialCentres,
+    targetCount <= 3 ? 16 : targetCount <= 6 ? 13 : 11,
+  );
+
+  const candidates = [...fallbackEntries].sort((left, right) => right.count - left.count);
+
+  while (centres.length < Math.min(targetCount, candidates.length)) {
+    let best: ColourStat | null = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
+
+    for (const entry of candidates) {
+      if (centres.some((centre) => centre.hex === entry.hex)) {
+        continue;
+      }
+
+      const minDistance =
+        centres.length > 0
+          ? centres.reduce(
+              (bestValue, centre) =>
+                Math.min(bestValue, gamePaletteDistance(centre.hex, entry.hex)),
+              Number.POSITIVE_INFINITY,
+            )
+          : 999;
+
+      const score =
+        minDistance * 4 +
+        Math.abs(entry.luminance - 128) * 0.2 +
+        Math.min(entry.count, 80) * 0.1 +
+        rgbChroma(entry.rgb) * 0.05;
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = entry;
+      }
+    }
+
+    if (!best) {
+      break;
+    }
+
+    centres.push({
+      hex: normalizeHex(best.hex),
+      rgb: clampRgb(best.rgb),
+      luma: best.luminance,
+    });
+
+    centres = collapseNearPaletteCentres(
+      centres,
+      targetCount <= 3 ? 14 : targetCount <= 6 ? 11 : 9,
+    );
+  }
+
+  centres = [...centres]
+    .sort((left, right) => left.luma - right.luma)
+    .slice(0, targetCount);
+
+  const minGap =
+    targetCount <= 2 ? 24 : targetCount === 3 ? 18 : targetCount <= 5 ? 14 : 10;
+
+  for (let i = 1; i < centres.length; i += 1) {
+    const previous = centres[i - 1]!;
+    const current = centres[i]!;
+    const required = previous.luma + minGap;
+
+    if (current.luma < required) {
+      current.rgb = shiftToLuminance(current.rgb, required);
+      current.rgb = clampRgb(current.rgb);
+      current.hex = normalizeHex(rgbToHex(current.rgb));
+      current.luma = luminance(current.rgb);
+    }
+  }
+
+  for (let i = centres.length - 2; i >= 0; i -= 1) {
+    const current = centres[i]!;
+    const next = centres[i + 1]!;
+    const allowed = next.luma - minGap;
+
+    if (current.luma > allowed) {
+      current.rgb = shiftToLuminance(current.rgb, allowed);
+      current.rgb = clampRgb(current.rgb);
+      current.hex = normalizeHex(rgbToHex(current.rgb));
+      current.luma = luminance(current.rgb);
+    }
+  }
+
+  return centres.map((centre) => {
+    const rgb = clampRgb(centre.rgb);
+    const hex = normalizeHex(rgbToHex(rgb));
+    return {
+      hex,
+      rgb,
+      luma: luminance(rgb),
+    };
+  });
+}
+
+
 function countDistinctColourHexes(pixelMap: PixelMap): number {
   const used = new Set<string>();
 
@@ -100,6 +260,7 @@ function countDistinctColourHexes(pixelMap: PixelMap): number {
   return used.size;
 }
 
+
 function collectProtectedMicroDetailPixels(source: PixelMap): Set<string> {
   const protectedPixels = new Set<string>();
   const height = source.length;
@@ -110,12 +271,6 @@ function collectProtectedMicroDetailPixels(source: PixelMap): Set<string> {
   }
 
   const visited = Array.from({ length: height }, () => Array<boolean>(width).fill(false));
-  const dirs = [
-    [1, 0],
-    [-1, 0],
-    [0, 1],
-    [0, -1],
-  ] as const;
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
@@ -125,10 +280,11 @@ function collectProtectedMicroDetailPixels(source: PixelMap): Set<string> {
       }
 
       const baseHex = normalizeHex(pixel.colorHex ?? "#000000");
-      const stack: Array<{ x: number; y: number }> = [{ x, y }];
+      const stack: Point[] = [{ x, y }];
       visited[y]![x] = true;
 
-      const points: Array<{ x: number; y: number }> = [];
+      const points: Point[] = [];
+      const neighbourHexes = new Set<string>();
       let boundaryCount = 0;
       let minX = x;
       let maxX = x;
@@ -147,7 +303,7 @@ function collectProtectedMicroDetailPixels(source: PixelMap): Set<string> {
         minY = Math.min(minY, current.y);
         maxY = Math.max(maxY, current.y);
 
-        for (const [dx, dy] of dirs) {
+        for (const [dx, dy] of DIRS) {
           const nx = current.x + dx;
           const ny = current.y + dy;
 
@@ -165,51 +321,75 @@ function collectProtectedMicroDetailPixels(source: PixelMap): Set<string> {
           const neighbourHex = normalizeHex(neighbour.colorHex ?? "#000000");
           if (neighbourHex !== baseHex) {
             boundaryCount += 1;
+            neighbourHexes.add(neighbourHex);
             continue;
           }
 
-          if (!visited[ny]![nx]) {
+          if (!visited[ny]?.[nx]) {
             visited[ny]![nx] = true;
             stack.push({ x: nx, y: ny });
           }
         }
       }
 
-      const size = points.length;
-      const bboxArea = Math.max(1, (maxX - minX + 1) * (maxY - minY + 1));
-      const fillRatio = size / bboxArea;
-      const lum = luminance(parseHexColor(baseHex));
-      const chroma = smallDetailChroma(baseHex);
-      const boundaryPerPixel = boundaryCount / Math.max(1, size);
+      const area = points.length;
+      const spanX = maxX - minX + 1;
+      const spanY = maxY - minY + 1;
+      const maxSpan = Math.max(spanX, spanY);
+      const boundaryRatio = boundaryCount / Math.max(1, area * 4);
+      const baseRgb = parseHexColor(baseHex);
+      const baseLuma = luminance(baseRgb);
+      const baseChroma = rgbChroma(baseRgb);
 
-      const isMicroDarkLine =
-        lum <= 92 &&
-        size <= 48 &&
-        boundaryPerPixel >= 1.15 &&
-        fillRatio <= 0.78;
+      let maxContrast = 0;
+      let maxLumaGap = 0;
 
-      const isSmallAccentDetail =
-        size <= 72 &&
-        boundaryPerPixel >= 1.0 &&
-        (
-          chroma >= 16 ||
-          (lum >= 95 && lum <= 210)
+      for (const neighbourHex of neighbourHexes) {
+        maxContrast = Math.max(maxContrast, gamePaletteDistance(baseHex, neighbourHex));
+        maxLumaGap = Math.max(
+          maxLumaGap,
+          Math.abs(baseLuma - luminance(parseHexColor(neighbourHex))),
         );
+      }
 
       const shouldProtect =
-        isMicroDarkLine ||
-        isSmallAccentDetail;
+        (
+          area <= 2 &&
+          boundaryRatio >= 0.30 &&
+          (maxContrast >= 8 || maxLumaGap >= 10)
+        ) ||
+        (
+          area <= 6 &&
+          maxSpan <= 6 &&
+          boundaryRatio >= 0.28 &&
+          (maxContrast >= 10 || maxLumaGap >= 12 || baseChroma >= 18)
+        ) ||
+        (
+          area <= 12 &&
+          maxSpan <= 10 &&
+          boundaryRatio >= 0.42 &&
+          (maxContrast >= 14 || maxLumaGap >= 16)
+        ) ||
+        (
+          area <= 20 &&
+          maxSpan <= 6 &&
+          boundaryRatio >= 0.58 &&
+          maxContrast >= 16
+        );
 
-      if (shouldProtect) {
-        for (const point of points) {
-          protectedPixels.add(pointKey(point.x, point.y));
-        }
+      if (!shouldProtect) {
+        continue;
+      }
+
+      for (const point of points) {
+        protectedPixels.add(pointKey(point.x, point.y));
       }
     }
   }
 
   return protectedPixels;
 }
+
 
 function despeckleLowContrastNoise(
   pixelMap: PixelMap,
@@ -306,6 +486,24 @@ function restoreProtectedMicroDetails(
   protectedPixels: Set<string>,
 ): PixelMap {
   const next = current.map((row) => row.map((pixel) => (pixel ? { ...pixel } : pixel)));
+  const palette = getDistinctColorHexes(current);
+
+  if (palette.length === 0) {
+    return next;
+  }
+
+  const paletteInfo = palette.map((hex) => {
+    const rgb = parseHexColor(hex);
+    return {
+      hex: normalizeHex(hex),
+      rgb,
+      luma: luminance(rgb),
+      chroma: rgbChroma(rgb),
+    };
+  });
+
+  const darkest =
+    [...paletteInfo].sort((a, b) => a.luma - b.luma)[0] ?? paletteInfo[0];
 
   for (let y = 0; y < original.length; y += 1) {
     const sourceRow = original[y];
@@ -328,9 +526,44 @@ function restoreProtectedMicroDetails(
         continue;
       }
 
+      const sourceHex = normalizeHex(sourcePixel.colorHex ?? "#000000");
+      const sourceRgb = parseHexColor(sourceHex);
+      const sourceLuma = luminance(sourceRgb);
+      const sourceChroma = rgbChroma(sourceRgb);
+
+      let candidates = paletteInfo;
+
+      // 鼻子、嘴、胡子、小黑线：只恢复形状，颜色映射到当前已存在的暗线色，
+      // 不把原始碎黑/碎灰重新加回 palette。
+      if (sourceLuma <= 95) {
+        const darkCandidates = paletteInfo.filter((item) => item.luma <= 115);
+        candidates = darkCandidates.length > 0 ? darkCandidates : [darkest];
+      }
+
+      // 金色 / 粉耳 / 小装饰：优先映射到当前已存在的有色度颜色。
+      if (sourceChroma >= 16) {
+        const chromaCandidates = paletteInfo.filter(
+          (item) => item.chroma >= Math.max(8, sourceChroma * 0.42),
+        );
+        if (chromaCandidates.length > 0) {
+          candidates = chromaCandidates;
+        }
+      }
+
+      const best =
+        candidates
+          .map((item) => ({
+            item,
+            score:
+              gamePaletteDistance(sourceHex, item.hex) +
+              Math.abs(sourceLuma - item.luma) * 0.45 +
+              Math.abs(sourceChroma - item.chroma) * 0.25,
+          }))
+          .sort((a, b) => a.score - b.score)[0]?.item ?? darkest;
+
       next[y]![x] = {
         ...targetPixel,
-        colorHex: normalizeHex(sourcePixel.colorHex ?? "#000000"),
+        colorHex: best.hex,
       };
     }
   }
@@ -861,14 +1094,12 @@ function applyFamilyBudgetToComponent(
 
   allocateFamilyBudgets(families, remainingBudget, options);
 
-  const darkestLineLuminance =
-    protectedEntries.length > 0
-      ? Math.min(...protectedEntries.map((entry) => entry.luminance))
-      : null;
-
   for (const family of families) {
-    const palette = buildFamilyPalette(family.entries, family.budget, darkestLineLuminance, options);
+    const palette = buildFamilyPalette(family, family.budget, options);
     if (palette.length === 0) {
+      for (const entry of family.entries) {
+        colourMap.set(entry.hex, entry.hex);
+      }
       continue;
     }
 
@@ -1287,6 +1518,7 @@ function allocateFamilyBudgets(
   }
 }
 
+
 function buildFamilyPalette(
   family: Family,
   budget: number,
@@ -1300,12 +1532,24 @@ function buildFamilyPalette(
     return [];
   }
 
-  if (budget === 1) {
-    return [pickRepresentativeEntry(entries).hex];
+  const uniqueEntries = [...new Map(entries.map((entry) => [entry.hex, entry])).values()];
+
+  if (uniqueEntries.length <= budget) {
+    return spreadPaletteCentresForGame(
+      uniqueEntries.map((entry) => ({
+        hex: normalizeHex(entry.hex),
+        rgb: clampRgb(entry.rgb),
+        luma: entry.luminance,
+      })),
+      uniqueEntries,
+      uniqueEntries.length,
+    ).map((entry) => entry.hex);
   }
 
   let quantiles: number[];
-  if (budget === 2) {
+  if (budget === 1) {
+    quantiles = [0.5];
+  } else if (budget === 2) {
     quantiles = [0.2, 0.8];
   } else if (budget === 3) {
     quantiles = [0.14, 0.5, 0.86];
@@ -1315,103 +1559,48 @@ function buildFamilyPalette(
     );
   }
 
-  const palette: Array<{ hex: string; rgb: RGB; luma: number }> = [];
-  const usedHexes = new Set<string>();
+  const picked: Array<{ hex: string; rgb: RGB; luma: number }> = [];
+  const seen = new Set<string>();
 
   for (const quantile of quantiles) {
-    const picked = pickWeightedQuantile(entries, quantile);
-    if (!usedHexes.has(picked.hex)) {
-      usedHexes.add(picked.hex);
-      palette.push({
-        hex: picked.hex,
-        rgb: { ...picked.rgb },
-        luma: picked.luminance,
-      });
+    const entry = pickWeightedQuantile(uniqueEntries, quantile);
+    if (seen.has(entry.hex)) {
+      continue;
     }
-  }
-
-  while (palette.length < Math.min(budget, entries.length)) {
-    let bestEntry: ColourStat | null = null;
-    let bestScore = Number.NEGATIVE_INFINITY;
-
-    for (const entry of entries) {
-      if (usedHexes.has(entry.hex)) {
-        continue;
-      }
-
-      const minDistance =
-        palette.length === 0
-          ? 999
-          : Math.min(
-              ...palette.map(
-                (item) =>
-                  rgbDistance(entry.rgb, item.rgb) +
-                  Math.abs(entry.luminance - item.luma),
-              ),
-            );
-
-      const score = minDistance + structuralDetailScore(entry, entries) * 8;
-
-      if (score > bestScore) {
-        bestScore = score;
-        bestEntry = entry;
-      }
-    }
-
-    if (!bestEntry) {
-      break;
-    }
-
-    usedHexes.add(bestEntry.hex);
-    palette.push({
-      hex: bestEntry.hex,
-      rgb: { ...bestEntry.rgb },
-      luma: bestEntry.luminance,
+    seen.add(entry.hex);
+    picked.push({
+      hex: normalizeHex(entry.hex),
+      rgb: clampRgb(entry.rgb),
+      luma: entry.luminance,
     });
   }
 
-  palette.sort((left, right) => left.luma - right.luma);
+  const darkest = uniqueEntries[0];
+  const brightest = uniqueEntries[uniqueEntries.length - 1];
 
-  const detailFamily = isStructuralDetailFamily(family);
-  const luminanceRange = familyLuminanceRange(family);
-
-  let minGap = budget <= 2 ? 18 : budget === 3 ? 14 : 10;
-  if (detailFamily) {
-    minGap += 4;
-  }
-  if (luminanceRange >= 34) {
-    minGap += 2;
-  }
-
-  for (let index = 1; index < palette.length; index += 1) {
-    const previous = palette[index - 1];
-    const current = palette[index];
-
-    if (!previous || !current) {
-      continue;
-    }
-
-    const requiredLuma = previous.luma + minGap;
-    if (current.luma < requiredLuma) {
-      current.rgb = shiftToLuminance(current.rgb, requiredLuma);
-      current.luma = luminance(current.rgb);
-      current.hex = rgbToHex(current.rgb);
-    }
+  if (darkest && !seen.has(darkest.hex) && picked.length < budget) {
+    seen.add(darkest.hex);
+    picked.push({
+      hex: normalizeHex(darkest.hex),
+      rgb: clampRgb(darkest.rgb),
+      luma: darkest.luminance,
+    });
   }
 
-  if (detailFamily && palette.length >= 2) {
-    const first = palette[0];
-    const second = palette[1];
-
-    if (first && second && second.luma - first.luma < 18) {
-      first.rgb = shiftToLuminance(first.rgb, Math.max(0, second.luma - 18));
-      first.luma = luminance(first.rgb);
-      first.hex = rgbToHex(first.rgb);
-    }
+  if (brightest && !seen.has(brightest.hex) && picked.length < budget) {
+    seen.add(brightest.hex);
+    picked.push({
+      hex: normalizeHex(brightest.hex),
+      rgb: clampRgb(brightest.rgb),
+      luma: brightest.luminance,
+    });
   }
 
-  return [...new Set(palette.map((item) => item.hex))];
+  const finalPalette = spreadPaletteCentresForGame(picked, uniqueEntries, budget);
+
+  return [...new Set(finalPalette.map((entry) => entry.hex))];
 }
+
 
 function pickWeightedQuantile(entries: ColourStat[], quantile: number): ColourStat {
   const total = entries.reduce((sum, entry) => sum + entry.count, 0);
@@ -1554,6 +1743,7 @@ function smoothTinyColourIslands(pixelMap: PixelMap, maxIslandSize: number): Pix
   return next;
 }
 
+
 function mergeGlobalSimilarColours(
   pixelMap: PixelMap,
   targetColorCount: number,
@@ -1561,21 +1751,26 @@ function mergeGlobalSimilarColours(
   options: NormalizedOptions,
 ): PixelMap {
   let next = clonePixelMap(pixelMap);
+  let guard = 0;
 
-  while (getDistinctColorHexes(next).length > targetColorCount) {
-    const stats = buildGlobalColourStats(next);
-    const colours = [...stats.keys()];
-    if (colours.length <= targetColorCount) {
+  while (guard < 512) {
+    const distinctHexes = getDistinctColorHexes(next);
+    if (distinctHexes.length <= targetColorCount) {
       break;
     }
+
+    const stats = buildGlobalColourStats(next);
+    const mergePressure = distinctHexes.length - targetColorCount;
+    const threshold =
+      mergePressure > 32 ? 18 : mergePressure > 16 ? 15 : mergePressure > 8 ? 13 : 11;
 
     let bestPair: [string, string] | null = null;
     let bestScore = Number.POSITIVE_INFINITY;
 
-    for (let i = 0; i < colours.length; i += 1) {
-      for (let j = i + 1; j < colours.length; j += 1) {
-        const aHex = colours[i];
-        const bHex = colours[j];
+    for (let i = 0; i < distinctHexes.length; i += 1) {
+      const aHex = distinctHexes[i]!;
+      for (let j = i + 1; j < distinctHexes.length; j += 1) {
+        const bHex = distinctHexes[j]!;
 
         if (protectedColours.has(aHex) && protectedColours.has(bHex)) {
           continue;
@@ -1587,14 +1782,26 @@ function mergeGlobalSimilarColours(
           continue;
         }
 
-        const distance =
-          rgbDistance(a.rgb, b.rgb) +
-          Math.abs(a.luminance - b.luminance) * 0.9;
+        const distance = gamePaletteDistance(aHex, bHex);
+        const lumaGap = Math.abs(a.luminance - b.luminance);
+        const chromaGap = Math.abs(rgbChroma(a.rgb) - rgbChroma(b.rgb));
+        const oneProtected =
+          protectedColours.has(aHex) || protectedColours.has(bHex);
 
-        const boundaryPenalty =
-          (protectedColours.has(aHex) || protectedColours.has(bHex)) ? 6 : 0;
+        if (distance > threshold + (oneProtected ? -2 : 0)) {
+          continue;
+        }
 
-        const score = distance + boundaryPenalty;
+        if (oneProtected && lumaGap > 16) {
+          continue;
+        }
+
+        const score =
+          distance +
+          lumaGap * 0.4 +
+          chromaGap * 0.12 +
+          (oneProtected ? 3 : 0) +
+          Math.abs(a.count - b.count) / Math.max(1, Math.max(a.count, b.count));
 
         if (score < bestScore) {
           bestScore = score;
@@ -1610,32 +1817,27 @@ function mergeGlobalSimilarColours(
     const [aHex, bHex] = bestPair;
     const a = stats.get(aHex);
     const b = stats.get(bHex);
+
     if (!a || !b) {
       break;
     }
 
-    let fromHex = aHex;
-    let toHex = bHex;
+    let fromHex = a.count <= b.count ? aHex : bHex;
+    let toHex = fromHex === aHex ? bHex : aHex;
 
     if (protectedColours.has(fromHex) && !protectedColours.has(toHex)) {
-      fromHex = bHex;
-      toHex = aHex;
-    } else if (!protectedColours.has(fromHex) && !protectedColours.has(toHex)) {
-      if (a.count > b.count) {
-        fromHex = bHex;
-        toHex = aHex;
-      }
+      const temp = fromHex;
+      fromHex = toHex;
+      toHex = temp;
     }
 
     next = replaceColour(next, fromHex, toHex);
-
-    if (bestScore > options.maxMergeDistance * 2.8 && getDistinctColorHexes(next).length <= targetColorCount + 1) {
-      break;
-    }
+    guard += 1;
   }
 
   return next;
 }
+
 
 function buildGlobalColourStats(pixelMap: PixelMap): Map<string, { count: number; rgb: RGB; luminance: number }> {
   const stats = new Map<string, { count: number; rgb: RGB; luminance: number }>();
